@@ -1,0 +1,215 @@
+#include "FlujoConexion.h"
+
+FlujoConexion::FlujoConexion(BronquitoUI &ui, BronquitoNetwork &net, TarjetaSD &tarjeta, Reloj &reloj,
+                             FlujoSesion &sesion, const EstadoSistema &estado)
+  : ui(ui), net(net), tarjeta(tarjeta), reloj(reloj), sesion(sesion), estado(estado) {}
+
+// ---------------------------------------------------------------------------
+// ESTADO DE LA CONEXIÓN
+// ---------------------------------------------------------------------------
+EstadoConexion FlujoConexion::calcularEstado() {
+  if (!net.estaConectado()) return CON_NINGUNA;
+  return compuOk ? CON_WIFI_Y_COMPU : CON_SOLO_WIFI;
+}
+
+void FlujoConexion::actualizarConexion() {
+  bool wifiAhora = net.estaConectado();
+  if (wifiAhora && !wifiAntes && net.servidorGuardado().length() > 0)
+    syncInicialPendiente = true;
+  if (!wifiAhora) compuOk = false;
+  wifiAntes = wifiAhora;
+}
+
+void FlujoConexion::atenderSyncInicial() {
+  if (syncInicialPendiente && estado == ESTADO_INICIO_SESION) {
+    syncInicialPendiente = false;
+    sincronizar();
+    sesion.redibujarPantallaActual();
+  }
+}
+
+void FlujoConexion::actualizarIndicador() {
+  EstadoConexion est = calcularEstado();
+  if (est != ultimoEstado) {
+    ultimoEstado = est;
+    ui.setEstadoConexion(est);
+    sesion.redibujarPantallaActual();
+  }
+}
+
+void FlujoConexion::menuConectar() {
+  if (!net.estaConectado()) {
+    flujoWifi();
+  } else {
+    int op = ui.elegirConexion(net.ssidActual());
+    if (op == 0) flujoWifi();
+    else if (op == 1) flujoCompu();
+    else if (op == 2) {
+      if (net.servidorGuardado().length() == 0) flujoCompu();
+      else sincronizar();
+    }
+  }
+  actualizarConexion();
+  syncInicialPendiente = false;
+  ultimoEstado = calcularEstado();
+  ui.setEstadoConexion(ultimoEstado);
+}
+
+void FlujoConexion::mostrarEstado() {
+  ui.mostrarEstadoConexion(net.estaConectado() ? net.ssidActual() : "", net.servidorGuardado());
+}
+
+void FlujoConexion::olvidarRedes() {
+  net.olvidarRedes();
+  compuOk = false;
+}
+
+// ---------------------------------------------------------------------------
+// IDENTIFICACIÓN
+// ---------------------------------------------------------------------------
+bool FlujoConexion::dispositivoVacio()   { return tarjeta.estado() == TARJETA_SIN_PACIENTE; }
+String FlujoConexion::usuarioActual()    { return tarjeta.hayPaciente() ? tarjeta.usuario() : ""; }
+int FlujoConexion::archivosPendientes()  { return tarjeta.hayPaciente() ? tarjeta.contarPendientes() : 0; }
+
+bool FlujoConexion::identificarCompu(const String &ip, RespuestaIdentificar &r) {
+  bool ok = net.identificar(ip, dispositivoVacio(), usuarioActual(), archivosPendientes(), r);
+  if (ok) {
+    if (reloj.ponerHoraDeLaWeb(r.epoch, r.offsetMin)) Serial.println("[RELOJ] RTC puesto en hora desde la web");
+    else Serial.println("[RELOJ] No se pudo poner en hora el RTC (¿módulo conectado?)");
+  }
+  compuOk = ok;
+  return ok;
+}
+
+// ---------------------------------------------------------------------------
+// SOLICITUDES DE LA WEB
+// ---------------------------------------------------------------------------
+void FlujoConexion::atenderSolicitud(JsonObject s) {
+  int id = s["id"] | 0;
+  String tipo = String(s["tipo"] | "");
+  Serial.println("[SYNC] Solicitud " + String(id) + ": " + tipo);
+
+  // Lo que pide la web sobre el paciente lo resuelve FlujoSesion; acá solo se le responde a la web
+  String motivo;
+  if (tipo == "RESET")              motivo = sesion.prepararNuevoPaciente();
+  else if (tipo == "CARGAR_PERFIL") motivo = sesion.cargarPaciente(s["payload"]["perfil"].as<JsonObjectConst>());
+  else                              motivo = "tipo_no_soportado";
+  net.confirmarSolicitud(id, motivo.length() == 0, motivo.c_str());
+}
+
+int FlujoConexion::procesarSolicitudes() {
+  for (int vuelta = 0; vuelta < 10; vuelta++) {
+    JsonDocument resp;
+    int http = net.pedirSolicitudes(resp);
+    if (http != 200) return http;
+
+    JsonArray lista = resp["solicitudes"].as<JsonArray>();
+    if (lista.size() == 0) return 200;
+
+    for (JsonObject s : lista) atenderSolicitud(s);
+  }
+  return 200;
+}
+
+void FlujoConexion::sincronizar() {
+  ui.mostrarMensaje("Sincronizando...");
+  RespuestaIdentificar r;
+  if (!identificarCompu(net.servidorGuardado(), r)) {
+    ui.mostrarMensaje("No se pudo sincronizar", net.textoError(r.http), COLOR_ROJO_DEL);
+    delay(2200);
+    return;
+  }
+  Serial.println("[SYNC] Hora local: " + reloj.fechaHoraActual());
+
+  if (tarjeta.hayPaciente() && !tarjeta.faltaPin() && r.usuario.length() > 0 &&
+      r.usuario == tarjeta.usuario() && r.pinVersion.length() > 0 && r.pinVersion != tarjeta.pinVersion()) {
+    sesion.pedirPinNuevo("PIN actualizado", "Ingresá tu nuevo PIN");
+  }
+
+  int http = procesarSolicitudes();
+  sesion.refrescarPerfilEnUI();
+
+  if (http == 200) ui.mostrarMensaje("¡Sincronizado!", "", COLOR_VERDE_OK);
+  else             ui.mostrarMensaje("No se pudo sincronizar", net.textoError(http), COLOR_ROJO_DEL);
+  delay(1200);
+}
+
+// ---------------------------------------------------------------------------
+// WI-FI Y COMPUTADORA
+// ---------------------------------------------------------------------------
+bool FlujoConexion::flujoCompu() {
+  while (true) {
+    String lineas[3] = {
+      "Asegurate de que la computadora",
+      "esté en la misma red e ingresá",
+      "el código que aparece en pantalla"
+    };
+    String codigo = ui.pedirCodigo(lineas, 3, net.prefijoRed());
+    if (codigo.length() == 0) return false;
+
+    if (codigo.toInt() > 255) {
+      ui.mostrarMensaje("Código inválido", "Tiene que ser de 0 a 255", COLOR_ROJO_DEL);
+      delay(1800);
+      continue;
+    }
+    String ip = net.prefijoRed() + String(codigo.toInt());
+
+    ui.mostrarMensaje("Probando la computadora...", ip);
+    RespuestaIdentificar r;
+    if (identificarCompu(ip, r)) {
+      net.guardarServidor(ip);
+      ui.mostrarMensaje("¡Computadora conectada!", ip, COLOR_VERDE_OK);
+      delay(1500);
+      return true;
+    }
+    ui.mostrarMensaje("La computadora no responde", net.textoError(r.http), COLOR_ROJO_DEL);
+    delay(2200);
+  }
+}
+
+void FlujoConexion::flujoWifi() {
+  while (true) {
+    ui.mostrarMensaje("Buscando redes...");
+    RedWifi redes[MAX_REDES];
+    int n = net.escanear(redes, MAX_REDES);
+    String nombres[MAX_REDES];
+    int rssi[MAX_REDES];
+    for (int i = 0; i < n; i++) { nombres[i] = redes[i].ssid; rssi[i] = redes[i].rssi; }
+
+    int sel = ui.elegirRed(nombres, rssi, n);
+    if (sel == -3) {
+      net.reconectarGuardada();
+      return;
+    }
+    if (sel == -1) continue;
+
+    String ssid;
+    if (sel == -2) {
+      ssid = ui.pedirTexto("Nombre de la red");
+      if (ssid == "") continue;
+    } else {
+      ssid = nombres[sel];
+    }
+
+    String clave = ui.pedirTexto("Contraseña de " + ssid);
+    if (clave == "") continue;
+
+    ui.mostrarMensaje("Conectando...", ssid);
+    ResultadoWifi r = net.conectar(ssid, clave);
+
+    if (r == RES_WIFI_OK) {
+      ui.mostrarMensaje("¡Wi-Fi conectado!", ssid, COLOR_VERDE_OK);
+      delay(1000);
+      wifiAntes = true;
+      compuOk = false;
+      flujoCompu();
+      return;
+    }
+    if (r == RES_WIFI_INCOMPATIBLE) {
+      ui.mostrarMensaje("Red no compatible", "Usá el Wi-Fi de tu casa o un hotspot", COLOR_ROJO_DEL);
+    } else {
+      ui.mostrarMensaje("No se pudo conectar", "Revisá la contraseña", COLOR_ROJO_DEL);
+    }
+    delay(1800);
+  }
+}

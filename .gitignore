@@ -1,0 +1,15 @@
+# Credenciales: NUNCA subir (cada uno tiene su propia copia local)
+Secretos.h
+**/Secretos.h
+
+# Versiones viejas del código y mediciones de prueba
+_archivos_viejos/
+PruebaSenales/mediciones/
+
+# Archivos de sistema y del IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+build/
+.vscode/
+__pycache__/
