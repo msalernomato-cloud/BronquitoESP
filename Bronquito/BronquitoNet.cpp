@@ -55,6 +55,32 @@ bool BronquitoNetwork::claveRecordada(const String &ssid, String &clave) {
   return false;
 }
 
+void BronquitoNetwork::olvidarRed(const String &ssid) {
+  // Se saca de la lista y las que estaban después se corren un lugar
+  int antes = prefs.getUChar("nRed", 0);
+  int n = 0;
+  for (int i = 0; i < antes; i++) {
+    String s = prefs.getString(claveMemoria("rs", i).c_str(), "");
+    if (s.length() == 0 || s == ssid) continue;
+    if (n != i) {
+      prefs.putString(claveMemoria("rs", n).c_str(), s);
+      prefs.putString(claveMemoria("rp", n).c_str(), prefs.getString(claveMemoria("rp", i).c_str(), ""));
+    }
+    n++;
+  }
+  for (int i = n; i < antes; i++) {
+    prefs.remove(claveMemoria("rs", i).c_str());
+    prefs.remove(claveMemoria("rp", i).c_str());
+  }
+  prefs.putUChar("nRed", n);
+  // Si era a la que se reconecta al prender, también: así no sigue probando con la contraseña vieja
+  if (prefs.getString("ssid", "") == ssid) {
+    prefs.remove("ssid");
+    prefs.remove("pass");
+  }
+  Serial.println("[NET] Contraseña olvidada: " + ssid);
+}
+
 // Empieza a conectarse a la red guardada. Si no está cerca, el core lo reintenta solo
 // en segundo plano hasta que aparezca (escanear() frena esos reintentos).
 void BronquitoNetwork::reconectarGuardada() {

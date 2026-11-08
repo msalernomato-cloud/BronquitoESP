@@ -308,14 +308,13 @@ void FlujoConexion::flujoWifi() {
     ResultadoWifi r = net.conectar(ssid, clave);
 
     if (r == RES_WIFI_FALLO && recordada) {
-      // La contraseña guardada no anduvo (la cambiaron, o la red está lejos): se pide de nuevo.
-      // Si con la nueva conecta, reemplaza a la guardada.
-      ui.mostrarMensaje("No se pudo conectar", "Ingresá la contraseña de nuevo", COLOR_ROJO_DEL);
-      delay(1800);
-      clave = ui.pedirTexto("Contraseña de " + ssid);
-      if (clave == "") continue;
-      ui.mostrarMensaje("Conectando...", ssid);
-      r = net.conectar(ssid, clave);
+      // La contraseña guardada no anduvo (¿la cambiaron?): se olvida y se vuelve a la lista de redes.
+      // Al elegir la red de nuevo se pide la contraseña, como la primera vez
+      net.olvidarRed(ssid);
+      ui.mostrarMensaje("No se pudo conectar a " + ssid.substring(0, 18), "Elegí la red e ingresá la contraseña",
+                        COLOR_ROJO_DEL);
+      delay(2500);
+      continue;
     }
 
     if (r == RES_WIFI_OK) {

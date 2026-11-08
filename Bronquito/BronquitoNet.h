@@ -61,6 +61,8 @@ public:
 
   // true si ya se conectó antes a esa red: deja su contraseña en 'clave' (así no se vuelve a pedir)
   bool claveRecordada(const String &ssid, String &clave);
+  // Olvida la contraseña guardada de esa red (ej. porque la cambiaron): la próxima vez se pide de nuevo
+  void olvidarRed(const String &ssid);
 
   // Inicio de la IP de esta red, sin el último número (ej: "10.200.0.")
   String prefijoRed() const {
