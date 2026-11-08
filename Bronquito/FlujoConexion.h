@@ -35,6 +35,9 @@ public:
   void ofrecerEnvio();
   // Botón "Enviar a la web" del historial: sincroniza ya (sube las pruebas y atiende los pedidos del médico)
   void enviarDatos();
+  // Para liberar espacio en la microSD: si no hay Wi-Fi pide conectarse, si no hay compu (o no responde) pide
+  // el código, y sincroniza. true si sincronizó bien. Si la web pidió borrar el paciente, queda en el login
+  bool conectarYSincronizar();
   // Borra todas las redes recordadas y la compu guardada
   void olvidarRedes();
 
@@ -59,7 +62,8 @@ private:
   void atenderSolicitud(JsonObject s);
   int procesarSolicitudes();
   int subirPendientes();
-  void sincronizar();
+  bool sincronizar();   // true si se identificó con la compu y atendió los pedidos de la web
+  void terminarFlujoConexion();   // al salir de las pantallas de conexión: actualiza el estado y el indicador
   bool flujoCompu();
   void flujoWifi();
 };

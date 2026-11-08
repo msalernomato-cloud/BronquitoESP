@@ -11,6 +11,7 @@
 #include "FlujoConexion.h"
 #include "FlujoCalibracion.h"
 #include "FlujoHistorial.h"
+#include "EspacioSD.h"
 
 // ---------------------------------------------------------------------------
 // HARDWARE
@@ -37,6 +38,7 @@ FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
 FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
 FlujoHistorial   historial(ui, tarjeta);
 FlujoConfiguracion configuracion(ui, tarjeta, net);
+EspacioSD        espacioSD(ui, tarjeta, conexion, estadoActual);
 
 void leerComandosSerie() {
   if (!Serial.available()) return;
@@ -48,6 +50,7 @@ void leerComandosSerie() {
   else if (c == "HORA")        reloj.imprimirEstado();
   else if (c == "I2C")         reloj.escanearBus();
   else if (c == "OLVIDAR_RED") conexion.olvidarRedes();
+  else if (c == "SD")          espacioSD.informarPorSerie();
 }
 
 void setup() {
@@ -164,6 +167,16 @@ void loop() {
 
     case EVENTO_CALIBRAR:
       Serial.println("[FSM] Calibración guiada: PIM + Espirometría");
+      // Si queda poco espacio en la microSD, borra pruebas viejas (ya enviadas a la web) antes de medir
+      if (!espacioSD.asegurarEspacio()) {
+        if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+          sesion.redibujarPantallaActual();
+          break;
+        }
+        estadoActual = ESTADO_MENU_CALIBRACION;
+        ui.drawCalibMenu();
+        break;
+      }
       calibracion.ejecutar();
       conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se suben en la próxima
       if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login

@@ -52,10 +52,33 @@ void FlujoConexion::menuConectar() {
       else sincronizar();
     }
   }
+  terminarFlujoConexion();
+}
+
+void FlujoConexion::terminarFlujoConexion() {
   actualizarConexion();
   syncInicialPendiente = false;
   ultimoEstado = calcularEstado();
   ui.setEstadoConexion(ultimoEstado);
+}
+
+bool FlujoConexion::conectarYSincronizar() {
+  bool ok = false;
+  if (!net.estaConectado()) {
+    ui.mostrarMensaje("Hay que enviar pruebas a la web", "Conectate a Wi-Fi", BRONQUITO_CYAN);
+    delay(2500);
+    flujoWifi();   // si se conecta, también pide la computadora
+  }
+  if (net.estaConectado()) {
+    if (net.servidorGuardado().length() == 0) flujoCompu();
+    if (net.servidorGuardado().length() > 0) {
+      ok = sincronizar();
+      // La compu guardada no respondió (¿es de otra red?): se pide el código y se reintenta una vez
+      if (!ok && !compuOk && estado != ESTADO_INICIO_SESION && flujoCompu()) ok = sincronizar();
+    }
+  }
+  terminarFlujoConexion();
+  return ok;
 }
 
 void FlujoConexion::mostrarEstado() {
@@ -178,13 +201,13 @@ int FlujoConexion::subirPendientes() {
   return subidas;
 }
 
-void FlujoConexion::sincronizar() {
+bool FlujoConexion::sincronizar() {
   ui.mostrarMensaje("Sincronizando...");
   RespuestaIdentificar r;
   if (!identificarCompu(net.servidorGuardado(), r)) {
     ui.mostrarMensaje("No se pudo sincronizar", net.textoError(r.http), COLOR_ROJO_DEL);
     delay(2200);
-    return;
+    return false;
   }
   Serial.println("[SYNC] Hora local: " + reloj.fechaHoraActual());
 
@@ -207,6 +230,7 @@ void FlujoConexion::sincronizar() {
   if (http == 200) ui.mostrarMensaje("¡Sincronizado!", detalle, COLOR_VERDE_OK);
   else             ui.mostrarMensaje("No se pudo sincronizar", net.textoError(http), COLOR_ROJO_DEL);
   delay(subidas > 0 ? 2000 : 1200);
+  return http == 200;
 }
 
 // ---------------------------------------------------------------------------

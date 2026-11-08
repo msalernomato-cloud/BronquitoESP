@@ -542,6 +542,16 @@ ResultadoFormato TarjetaSD::borrarTodo(bool forzar) {
   return ok ? FORMATO_OK : FORMATO_ERROR;
 }
 
+uint64_t TarjetaSD::espacioTotal() {
+  return hayTarjeta() ? SD.totalBytes() : 0;
+}
+
+uint64_t TarjetaSD::espacioLibre() {
+  if (!hayTarjeta()) return 0;
+  uint64_t total = SD.totalBytes(), usado = SD.usedBytes();
+  return total > usado ? total - usado : 0;
+}
+
 // =============================================================================
 // SUBIDA A LA WEB
 // =============================================================================
@@ -632,6 +642,125 @@ bool TarjetaSD::marcarSincronizado(const String &archivo) {
   // escribirJsonSeguro() escribe a un .tmp y después renombra: si se corta la luz a mitad, el .json no queda roto.
   // Compacto, como lo guarda guardarMedicion()
   return escribirJsonSeguro(ruta, doc, false);
+}
+
+// =============================================================================
+// LIBERAR ESPACIO
+// =============================================================================
+// Clave para ordenar de la más vieja a la más nueva, que sirve para las dos carpetas:
+//  - "SINHORA_n" (hechas cuando el equipo no tenía hora): primero, por n
+//  - con fecha en el nombre (AAAAMMDD_HHMMSS): por fecha
+//  - cualquier otro nombre: al final (no se sabe de cuándo es)
+static String claveAntiguedad(const String &id) {
+  int s = id.indexOf("SINHORA_");
+  if (s >= 0) {
+    int ini = s + 8, fin = ini;
+    while (fin < (int)id.length() && isDigit(id[fin])) fin++;
+    String num = id.substring(ini, fin);
+    while (num.length() < 8) num = "0" + num;
+    return "1" + num;
+  }
+  for (int i = 0; i + 15 <= (int)id.length(); i++) {
+    bool fecha = (id[i + 8] == '_');
+    for (int k = 0; fecha && k < 15; k++)
+      if (k != 8 && !isDigit(id[i + k])) fecha = false;
+    if (fecha) return "2" + id.substring(i, i + 8) + id.substring(i + 9, i + 15);
+  }
+  return "3" + id;
+}
+
+// Id de la prueba a la que pertenece un archivo: lo que va antes de "_PIM" o "_ESP"
+static String idDeGrupo(const String &base) {
+  int corte = base.length();
+  int p = base.indexOf("_PIM");
+  int e = base.indexOf("_ESP");
+  if (p > 0 && p < corte) corte = p;
+  if (e > 0 && e < corte) corte = e;
+  return base.substring(0, corte);
+}
+
+std::vector<GrupoPruebas> TarjetaSD::gruposMasViejos(int max) {
+  std::vector<GrupoPruebas> grupos;   // del más viejo al más nuevo, nunca más de 'max' (no hay RAM para todos)
+  if (max <= 0 || !hayTarjeta()) return grupos;
+
+  for (const char *carpeta : CARPETAS_PRUEBAS) {
+    File dir = SD.open(carpeta);
+    if (!dir || !dir.isDirectory()) { if (dir) dir.close(); continue; }
+
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+      String nombre = String(f.name());
+      bool esDir = f.isDirectory();
+      f.close();
+      nombre = nombre.substring(nombre.lastIndexOf('/') + 1);
+      String minusculas = nombre;
+      minusculas.toLowerCase();
+      // "." = los crea la compu (ej. "._eval..." en una Mac); "_" = temporales de la PIM
+      if (esDir || nombre.startsWith(".") || nombre.startsWith("_")) continue;
+      if (!minusculas.endsWith(".json") && !minusculas.endsWith(".csv")) continue;
+
+      String id = idDeGrupo(nombre.substring(0, nombre.lastIndexOf('.')));
+      String clave = String(carpeta) + "/" + id;
+      String ruta = String(carpeta) + "/" + nombre;
+
+      bool yaEsta = false;
+      for (GrupoPruebas &g : grupos) {
+        if (g.id == clave) { g.rutas.push_back(ruta); yaEsta = true; break; }
+      }
+      if (yaEsta) continue;
+
+      // Con la lista llena, solo entra si es más vieja que la más nueva de la lista (que se descarta).
+      // Como la más nueva de la lista solo puede ir siendo más vieja, una prueba que se descartó nunca
+      // vuelve a entrar con parte de sus archivos.
+      String orden = claveAntiguedad(id);
+      if ((int)grupos.size() >= max) {
+        if (!(orden < grupos.back().orden)) continue;
+        grupos.pop_back();
+      }
+      size_t pos = grupos.size();
+      while (pos > 0 && orden < grupos[pos - 1].orden) pos--;
+      GrupoPruebas g;
+      g.id = clave;
+      g.orden = orden;
+      g.rutas.push_back(ruta);
+      grupos.insert(grupos.begin() + pos, g);
+    }
+    dir.close();
+  }
+  return grupos;
+}
+
+bool TarjetaSD::grupoSincronizado(const GrupoPruebas &g) {
+  JsonDocument filtro;
+  filtro["sincronizado"] = true;
+  int jsons = 0;
+  for (const String &ruta : g.rutas) {
+    String r = ruta;
+    r.toLowerCase();
+    if (!r.endsWith(".json")) continue;
+    jsons++;
+    File f = SD.open(ruta, FILE_READ);
+    if (!f) return false;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f, DeserializationOption::Filter(filtro));
+    f.close();
+    if (err || !(doc["sincronizado"] | false)) return false;   // un .json dañado no se pudo subir: no se borra
+  }
+  return jsons > 0;   // sin .json no se sabe si está en la web
+}
+
+bool TarjetaSD::borrarGrupo(const GrupoPruebas &g) {
+  // Primero los .csv: si se corta a mitad, lo que queda tiene su .json (sincronizado) y se borra la próxima vez
+  bool ok = true;
+  for (int pasada = 0; pasada < 2; pasada++) {
+    for (const String &ruta : g.rutas) {
+      String r = ruta;
+      r.toLowerCase();
+      if (r.endsWith(".json") != (pasada == 1)) continue;
+      if (!SD.remove(ruta)) ok = false;
+    }
+  }
+  Serial.println(String("[SD] ") + (ok ? "Borrada: " : "No se pudo borrar del todo: ") + g.id);
+  return ok;
 }
 
 // =============================================================================

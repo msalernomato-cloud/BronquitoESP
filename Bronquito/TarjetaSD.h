@@ -97,6 +97,14 @@ struct SerieMedicion {
   std::vector<float> ve;           // volumen SOLO de la espiración (L): para la curva volumen-tiempo
 };
 
+// Archivos de una misma prueba, que se borran siempre juntos: una calibración (<id>_PIM, <id>_ESP y sus
+// intentos fallidos <id>_ESP_int<n>_E<c>, cada uno con su .json y su .csv) o un entrenamiento.
+struct GrupoPruebas {
+  String id;                    // carpeta + id (ej. "/EVALUACIONES/eval_20260901_091500")
+  String orden;                 // para ordenar de la más vieja a la más nueva
+  std::vector<String> rutas;    // rutas completas de sus archivos
+};
+
 class TarjetaSD {
 public:
   TarjetaSD(uint8_t pinCS = 19, uint8_t pinSCK = 22, uint8_t pinMISO = 23, uint8_t pinMOSI = 21);
@@ -174,6 +182,9 @@ public:
   // =========================================================================
   int contarPendientes();                            // mediciones con "sincronizado": false
   ResultadoFormato borrarTodo(bool forzar = false);  // sin forzar, no borra si hay pendientes
+  // Espacio de la microSD en bytes (0 si no hay tarjeta). La primera vez puede tardar en tarjetas grandes
+  uint64_t espacioTotal();
+  uint64_t espacioLibre();
 
   // =========================================================================
   // SUBIDA A LA WEB (ver FlujoConexion::subirPendientes)
@@ -186,6 +197,17 @@ public:
   bool armarEnvio(const String &archivo, const String &usuario, String &cuerpo);
   // Pone "sincronizado": true en el .json, para no volver a subirla
   bool marcarSincronizado(const String &archivo);
+
+  // =========================================================================
+  // LIBERAR ESPACIO (ver EspacioSD)
+  // =========================================================================
+  // Las 'max' pruebas más viejas de /EVALUACIONES y /ENTRENAMIENTOS, de la más vieja a la más nueva.
+  // Vacío si no hay tarjeta
+  std::vector<GrupoPruebas> gruposMasViejos(int max);
+  // true si todos sus .json dicen "sincronizado": true (y tiene al menos uno). Si no, no se puede borrar
+  bool grupoSincronizado(const GrupoPruebas &g);
+  // Borra todos sus archivos (primero los .csv y al final los .json). false si alguno no se pudo borrar
+  bool borrarGrupo(const GrupoPruebas &g);
 
 private:
   uint8_t pinCS, pinSCK, pinMISO, pinMOSI;
