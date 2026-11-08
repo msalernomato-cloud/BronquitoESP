@@ -190,7 +190,7 @@ void FlujoConexion::sincronizar() {
 
   if (tarjeta.hayPaciente() && !tarjeta.faltaPin() && r.usuario.length() > 0 &&
       r.usuario == tarjeta.usuario() && r.pinVersion.length() > 0 && r.pinVersion != tarjeta.pinVersion()) {
-    sesion.pedirPinNuevo("PIN actualizado", "Ingresá tu nuevo PIN");
+    sesion.pedirPinNuevo("Ingresá tu PIN", "");
   }
 
   // Las pruebas van antes que los pedidos del médico: un RESET se niega mientras haya pruebas sin subir
