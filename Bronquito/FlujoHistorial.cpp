@@ -19,14 +19,15 @@ void FlujoHistorial::graficarEvaluacion(const String &id, bool esPim) {
     return;
   }
 
-  // Tres gráficos; el botón pasa al siguiente. Espiración e inspiración en colores distintos
+  // Tres gráficos; el botón pasa al siguiente. Volumen-tiempo: SOLO la espiración (un color, sin
+  // inspiración). Flujo-volumen y flujo-tiempo: espiración e inspiración en colores distintos
   // (el signo del flujo dice cuál es cuál: la inspiración es negativa).
   const float *q = s.q.data();
   int g = 0;
   while (true) {
     int r;
-    if (g == 0)      r = ui.mostrarGrafico("Volumen en el tiempo", "Tiempo (s)", "Volumen (L)",
-                                           s.t.data(), s.v.data(), n, "Flujo / Volumen", q);
+    if (g == 0)      r = ui.mostrarGrafico("Volumen espirado en el tiempo", "Tiempo (s)", "Volumen (L)",
+                                           s.t.data(), s.ve.data(), n, "Flujo / Volumen");
     else if (g == 1) r = ui.mostrarGrafico("Flujo en función del volumen", "Volumen (L)", "Flujo (L/min)",
                                            s.v.data(), q, n, "Flujo / Tiempo", q);
     else             r = ui.mostrarGrafico("Flujo en el tiempo", "Tiempo (s)", "Flujo (L/min)",

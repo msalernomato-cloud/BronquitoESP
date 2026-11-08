@@ -1,4 +1,5 @@
 #include "RespiratorySensors.h"
+#include "AnalisisEspiro.h"   // SIGNO_PRESION_ESPIRACION
 
 RespiratorySensors::RespiratorySensors(int pinFlujo, int pinPIM)
   : _pinFlujo(pinFlujo), _pinPIM(pinPIM),
@@ -8,26 +9,49 @@ RespiratorySensors::RespiratorySensors(int pinFlujo, int pinPIM)
     muestrasSinFlujo(0), presionBase(0.0f),
     volumenPendiente(0.0f), tInicio_us(0), tAnterior_us(0) {}
 
-RespiratorySensors *RespiratorySensors::instancia = nullptr;
-
-// ---- Muestreo por interrupción ----
-void ARDUINO_ISR_ATTR RespiratorySensors::isrMuestreo() {
-  BaseType_t despertoMasPrioritaria = pdFALSE;
-  if (instancia && instancia->tareaMuestreoHandle)
-    vTaskNotifyGiveFromISR(instancia->tareaMuestreoHandle, &despertoMasPrioritaria);
-  if (despertoMasPrioritaria == pdTRUE) portYIELD_FROM_ISR();
+// =============================================================================
+// MUESTREO POR INTERRUPCIÓN DE SOFTWARE (Ticker)
+// =============================================================================
+// Mediana de 3 valores: si una sola lectura salta (pico del ADC), queda afuera
+static inline uint16_t mediana3(uint16_t a, uint16_t b, uint16_t c) {
+  if (a > b) { uint16_t t = a; a = b; b = t; }
+  if (b > c) { b = c; }
+  return (a > b) ? a : b;
 }
 
-void RespiratorySensors::tareaMuestreo(void *arg) {
-  RespiratorySensors *s = static_cast<RespiratorySensors *>(arg);
-  for (;;) {
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);   // espera la interrupción del timer
-    s->tomarMuestraTimer();
-  }
+// La llama el Ticker cada 1 ms. Tiene que ser corta: lee, guarda y vuelve.
+void RespiratorySensors::alInterrumpir(RespiratorySensors *s) {
+  s->leerADC();
 }
 
-void RespiratorySensors::tomarMuestraTimer() {
+void RespiratorySensors::leerADC() {
   if (!muestreando) return;
+
+  // Mientras se escribe la pantalla (y 3 muestras después) no se lee el ADC
+  bool leer = !(congelado || saltarPendiente > 0);
+  if (leer) {
+    uint16_t f = analogReadMilliVolts(_pinFlujo);
+    uint16_t p = USAR_PIM ? analogReadMilliVolts(_pinPIM) : 0;
+
+    // 1. Mediana de 3 (esta lectura y las dos anteriores)
+    uint16_t fm = mediana3(f, previasFlujo[0], previasFlujo[1]);
+    uint16_t pm = mediana3(p, previasPIM[0], previasPIM[1]);
+    previasFlujo[1] = previasFlujo[0]; previasFlujo[0] = f;
+    previasPIM[1]   = previasPIM[0];   previasPIM[0]   = p;
+
+    // 2. Ventana de 20 ms: se saca la lectura más vieja y se suma la nueva
+    sumaFlujo += fm; sumaFlujo -= ventanaFlujo[idxVentana]; ventanaFlujo[idxVentana] = fm;
+    sumaPIM   += pm; sumaPIM   -= ventanaPIM[idxVentana];   ventanaPIM[idxVentana]   = pm;
+    idxVentana = (idxVentana + 1) % N_VENTANA_50HZ;
+  }
+
+  // 3. Cada 10 lecturas (10 ms) sale una muestra
+  if (++lecturasDesdeMuestra < LECTURAS_POR_MUESTRA) return;
+  lecturasDesdeMuestra = 0;
+  tomarMuestra();
+}
+
+void RespiratorySensors::tomarMuestra() {
   if (nMuestras >= capacidad) { muestreando = false; return; }
 
   MuestraEspiro m;
@@ -36,30 +60,35 @@ void RespiratorySensors::tomarMuestraTimer() {
     m.tiempo_s = (micros() - tInicio_us) / 1e6f;
     if (!congelado) saltarPendiente = saltarPendiente - 1;
   } else {
-    m = procesarMuestra();
+    float vFlujo = sumaFlujo / (1000.0f * N_VENTANA_50HZ);   // promedio de 20 ms, en V
+    float vPIM   = sumaPIM   / (1000.0f * N_VENTANA_50HZ);
+    m = procesarMuestra(vFlujo, vPIM);
     ultimaMuestra = m;
   }
   bufferMuestras[nMuestras] = m;
   nMuestras = nMuestras + 1;   // recién ahora el loop la puede leer
 }
 
-void RespiratorySensors::configurarMuestreo() {
-  instancia = this;
-  // Misma CPU que el loop (núcleo 1) y más prioridad: la tarea lo interrumpe apenas llega la interrupción.
-  // El núcleo 0 queda para el Wi-Fi.
-  xTaskCreatePinnedToCore(tareaMuestreo, "muestreo", 4096, this, 5, &tareaMuestreoHandle, 1);
-  timerMuestreo = timerBegin(1000000);                 // timer de 1 MHz (1 tick = 1 us)
-  if (!timerMuestreo) { Serial.println("[SENS] No se pudo crear el timer de muestreo"); return; }
-  timerAttachInterrupt(timerMuestreo, &isrMuestreo);
-  timerAlarm(timerMuestreo, PERIODO_US, true, 0);      // cada 10 ms, repetitivo
-  timerStop(timerMuestreo);                            // arranca recién con iniciarMuestreo()
+// La ventana arranca llena con el cero de la tara: así la primera muestra no arrastra un transitorio
+void RespiratorySensors::reiniciarVentanas() {
+  uint16_t zf = (uint16_t)lroundf(vZeroFlujo * 1000.0f);
+  uint16_t zp = (uint16_t)lroundf(vZeroPIM * 1000.0f);
+  for (int i = 0; i < N_VENTANA_50HZ; i++) { ventanaFlujo[i] = zf; ventanaPIM[i] = zp; }
+  sumaFlujo = (uint32_t)zf * N_VENTANA_50HZ;
+  sumaPIM   = (uint32_t)zp * N_VENTANA_50HZ;
+  previasFlujo[0] = previasFlujo[1] = zf;
+  previasPIM[0]   = previasPIM[1]   = zp;
+  idxVentana = 0;
+  lecturasDesdeMuestra = 0;
 }
 
 bool RespiratorySensors::iniciarMuestreo(size_t maxMuestras) {
-  if (!timerMuestreo || !tareaMuestreoHandle) return false;
-  timerStop(timerMuestreo);
+  InterrupcionSoftware.detach();
   muestreando = false;
   iniciarManiobra();                                   // reinicia el estado y el tiempo cero
+  reiniciarVentanas();
+  filtroFlujo.reiniciar(vZeroFlujo);
+  filtroPIM.reiniciar(vZeroPIM);
 
   // Memoria: primero se LIBERA el buffer anterior (clear() no devuelve la memoria) y recién después se pide
   // uno nuevo del tamaño justo. Si no, un vector que crece pide el bloque nuevo con el viejo todavía
@@ -78,16 +107,20 @@ bool RespiratorySensors::iniciarMuestreo(size_t maxMuestras) {
   saltarPendiente = 0;
   congelado = false;
   ultimaMuestra = MuestraEspiro{0, 0, 0, 0, 0, 0, 0};
+  tInicio_us = micros();
+  tAnterior_us = tInicio_us;
   muestreando = true;
-  timerRestart(timerMuestreo);
-  timerStart(timerMuestreo);
+
+  // Se habilita al final, cuando ya está todo listo (como en el ejemplo: si no, interrumpe a mitad
+  // de la preparación). Interrumpe cada 1 ms y va a alInterrumpir(this).
+  InterrupcionSoftware.attach_ms(PERIODO_LECTURA_MS, alInterrumpir, this);
   return true;
 }
 
 void RespiratorySensors::detenerMuestreo() {
-  if (timerMuestreo) timerStop(timerMuestreo);
   muestreando = false;
-  delay(2);                                            // por si la tarea estaba terminando una muestra
+  InterrupcionSoftware.detach();
+  delay(3);                                            // por si estaba terminando una lectura
   bufferMuestras.resize(nMuestras);
 }
 
@@ -96,7 +129,6 @@ void RespiratorySensors::begin() {
   if (USAR_PIM) pinMode(_pinPIM, INPUT);
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
-  configurarMuestreo();
 }
 
 float RespiratorySensors::leerV(int pin, int nProm) const {
@@ -109,16 +141,16 @@ float RespiratorySensors::leerV(int pin, int nProm) const {
 
 void RespiratorySensors::realizarTara() {
   const int MUESTRAS_TARA = 200;
-  float sumaFlujo = 0.0f, sumaPIM = 0.0f;
+  float acumFlujo = 0.0f, acumPIM = 0.0f;
 
-  for (int i = 0; i < MUESTRAS_TARA; i++) {
-    sumaFlujo += leerV(_pinFlujo, N_PROM_FLUJO);
-    if (USAR_PIM) sumaPIM += leerV(_pinPIM, N_PROM_PIM);
+  for (int i = 0; i < MUESTRAS_TARA; i++) {     // ~1 s: el promedio ya cancela los 50 Hz
+    acumFlujo += leerV(_pinFlujo, N_PROM_TARA);
+    if (USAR_PIM) acumPIM += leerV(_pinPIM, N_PROM_TARA);
     delay(5);
   }
 
-  vZeroFlujo = sumaFlujo / MUESTRAS_TARA;
-  vZeroPIM   = (USAR_PIM) ? sumaPIM / MUESTRAS_TARA : 0.0f;
+  vZeroFlujo = acumFlujo / MUESTRAS_TARA;
+  vZeroPIM   = (USAR_PIM) ? acumPIM / MUESTRAS_TARA : 0.0f;
 
   vFlujoFiltrado = vZeroFlujo;
   vPIMFiltrado   = vZeroPIM;
@@ -141,9 +173,8 @@ void RespiratorySensors::iniciarManiobra() {
   bufferMuestras.clear();       // la memoria la reserva iniciarMuestreo(), con el tamaño justo
 }
 
-MuestraEspiro RespiratorySensors::procesarMuestra() {
-  float vFlujoBruto = leerV(_pinFlujo, N_PROM_FLUJO);
-  float vPIMBruto   = (USAR_PIM) ? leerV(_pinPIM, N_PROM_PIM) : 0.0f;
+// vFlujoBruto y vPIMBruto ya vienen con la mediana y el promedio de 20 ms (sin 50 Hz)
+MuestraEspiro RespiratorySensors::procesarMuestra(float vFlujoBruto, float vPIMBruto) {
 
   uint32_t ahora_us = micros();
   float dt = (ahora_us - tAnterior_us) / 1e6f;
@@ -183,12 +214,14 @@ MuestraEspiro RespiratorySensors::procesarMuestra() {
     }
 
     // Sentido del flujo: lo da el sensor de presión, en CADA muestra (así se ve el paso de la
-    // espiración a la inspiración aunque no haya una pausa). Presión positiva = espiración,
-    // negativa = inspiración. Si la presión está cerca de cero se mantiene el sentido anterior.
+    // espiración a la inspiración aunque no haya una pausa). Con la placa actual la presión es
+    // NEGATIVA al espirar y POSITIVA al inspirar; dP se multiplica por SIGNO_PRESION_ESPIRACION para
+    // que dP > 0 sea espiración. Si la presión está cerca de cero se mantiene el sentido anterior.
+    // (Esto es solo para ver en vivo: el análisis decide el sentido de nuevo, por evento.)
     if (!USAR_PIM) {   // sin el sensor de presión no se conoce el sentido: se asume espiración
       fase = 1;
     } else {
-      float dP = presion_cmH2O - presionBase;
+      float dP = AnalisisEspiro::SIGNO_PRESION_ESPIRACION * (presion_cmH2O - presionBase);
       if (dP > UMBRAL_FASE)       fase =  1;
       else if (dP < -UMBRAL_FASE) fase = -1;
     }

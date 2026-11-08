@@ -459,7 +459,9 @@ bool TarjetaSD::cargarSerie(const String &id, SerieMedicion &serie) {
   File f = SD.open(rutaMedicion(id, ".csv"), FILE_READ);
   if (!f) return false;
 
-  float volumen = 0, tAnteriorMs = -1;
+  auto esEspiracion = [&](float tMs) { return conVentana && tMs >= inicioMs && tMs <= finMs; };
+
+  float volumen = 0, volumenEsp = 0, tAnteriorMs = -1;
   while (f.available() && (int)serie.t.size() < MAX_PUNTOS_GRAFICO) {
     String linea = f.readStringUntil('\n');
     linea.trim();
@@ -476,12 +478,15 @@ bool TarjetaSD::cargarSerie(const String &id, SerieMedicion &serie) {
 
     if (tAnteriorMs >= 0 && integrar(tMs))
       volumen += q * (tMs - tAnteriorMs) / 60000.0f;   // L/min · ms -> L (la inspiración, negativa, lo hace bajar)
+    if (tAnteriorMs >= 0 && (esEspiracion(tMs) || (!conVentana && q > 0)))
+      volumenEsp += q * (tMs - tAnteriorMs) / 60000.0f; // solo espiración: después queda fijo en la FVC
     tAnteriorMs = tMs;
 
     serie.t.push_back(tMs / 1000.0f);
     serie.p.push_back(p);
     serie.q.push_back(q);
     serie.v.push_back(volumen);
+    serie.ve.push_back(volumenEsp);
   }
   f.close();
   return serie.t.size() >= 2;

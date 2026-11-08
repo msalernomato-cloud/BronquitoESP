@@ -5,7 +5,7 @@ static const uint32_t DURACION_ESP_MS = 10000;   // 10 s
 static const bool GRAFICAR_CADA_INTENTO_PIM = false;  // true = muestra la presión en el tiempo al terminar cada intento
 // false = la calibración hace solo la espirometría (para probarla). El sensor de presión se sigue
 // usando: es el que dice si el aire sale o entra.
-static const bool HACER_PIM = false;
+static const bool HACER_PIM = true;
 
 FlujoCalibracion::FlujoCalibracion(BronquitoUI &ui, RespiratorySensors &sensoresResp, TarjetaSD &tarjeta,
                                    Reloj &reloj, BTPSSensor &btps)
@@ -57,8 +57,8 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
       [&]() { return ui.cancelarTocado(); });
 
   if (r == CAPTURA_SIN_MEMORIA) {
-    Serial.println("[CAL] No se pudo iniciar el muestreo (timer o memoria: ver líneas [MEM] / [SENS])");
-    ui.mostrarMensaje("No se pudo medir", "Falta memoria o timer (ver serie)", COLOR_ROJO_DEL);
+    Serial.println("[CAL] No se pudo iniciar el muestreo (memoria: ver líneas [MEM])");
+    ui.mostrarMensaje("No se pudo medir", "Falta memoria (ver serie)", COLOR_ROJO_DEL);
     delay(2000);
     return r;
   }
@@ -97,7 +97,7 @@ void FlujoCalibracion::calibracionCancelada(const String &calibId) {
   delay(1500);
 }
 
-// No se pudo medir (falta de memoria o del timer): no es una cancelación, así que lo ya guardado
+// No se pudo medir (falta de memoria): no es una cancelación, así que lo ya guardado
 // (con sus códigos de error) se conserva.
 void FlujoCalibracion::calibracionInterrumpida() {
   tarjeta.borrarTemporalesPIM();

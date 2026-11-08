@@ -6,8 +6,9 @@
 //
 // El sensor es un venturi: la garganta siempre tiene menos presión que la entrada, venga el aire
 // de un lado o del otro. dV = vFlujo_V - vZero es positivo tanto al soplar como al inspirar, así que
-// NO indica el sentido del flujo. El sentido lo da el sensor de presión de la boquilla: presión
-// positiva = espiración, negativa = inspiración. Se decide por EVENTO (todo el tramo con flujo toma el
+// NO indica el sentido del flujo. El sentido lo da el sensor de presión de la boquilla (con la placa
+// actual: presión positiva = inspiración, negativa = espiración; ver SIGNO_PRESION_ESPIRACION).
+// Se decide por EVENTO (todo el tramo con flujo toma el
 // signo del promedio de la presión), así el ruido de la presión no lo cambia a mitad de un soplido.
 //
 // Idea:
@@ -90,6 +91,19 @@ struct EventoEspiratorio {
 };
 
 namespace AnalisisEspiro {
+  // ---- MODO PRUEBA ----
+  // false = sin validaciones: no se rechaza ninguna maniobra (no hay E1, E2, E5 por pico bajo, E6, E7
+  // ni E8) y la inspiración se busca sin el límite de 3 s. Fuera de la espiración y de la inspiración
+  // el flujo queda en cero (no se ve el ruido). Poner en true para volver a validar.
+  const bool  VALIDAR         = false;
+
+  // ---- SENTIDO DE LA PRESIÓN ----
+  // Signo que tiene la presión de la boquilla al ESPIRAR. En la placa actual las tomas del sensor de
+  // presión quedaron ruteadas al revés: la presión manométrica da POSITIVA al inspirar (la PIM sale
+  // positiva) y NEGATIVA al espirar. Convención: presión > 0 = inspiración, presión < 0 = espiración.
+  // Si se corrige la placa, poner +1. (RespiratorySensors usa esta misma constante.)
+  const float SIGNO_PRESION_ESPIRACION = -1.0f;
+
   const float PICO_MIN_LMIN   = 120.0f;  // E5: PEF mínimo para considerar que hubo un soplido
   const float N_SIGMA         = 3.0f;    // umbral de inicio/fin = N_SIGMA * ruido
   const float UMBRAL_MIN_V    = 0.002f;  // límites del umbral (por si el ruido es muy chico o muy grande)
@@ -185,10 +199,11 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
   const float umbral = std::min(UMBRAL_MAX_V, std::max(UMBRAL_MIN_V, N_SIGMA * ev.ruido_V));
   ev.umbral_V = umbral;
 
-  // ---- b) Presión de la boquilla: da el SENTIDO (positiva = espiración, negativa = inspiración) ----
+  // ---- b) Presión de la boquilla: da el SENTIDO. Se multiplica por SIGNO_PRESION_ESPIRACION para que,
+  //         de acá en adelante, pr > 0 sea espiración y pr < 0 inspiración (el buffer no se toca). ----
   std::vector<float> pr(n), pf(n);
   float pBase, pRuido;
-  for (int i = 0; i < n; i++) pr[i] = b[i].presion_cmH2O;
+  for (int i = 0; i < n; i++) pr[i] = SIGNO_PRESION_ESPIRACION * b[i].presion_cmH2O;
   reposoYRuido(pr, pBase, pRuido);
   for (int i = 0; i < n; i++) pr[i] -= pBase;
   mediaMovil(pr, pf);
@@ -282,7 +297,7 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
   // 1) La espiración = el máximo de la señal suavizada
   int p = 0;
   for (int i = 1; i < n; i++) if (s[i] > s[p]) p = i;
-  if (s[p] <= 0.0f || kEspiracion * sqrtf(s[p]) < PICO_MIN_LMIN) ev.codigo = ESPIRO_E5_SIN_SOPLIDO;
+  if (s[p] <= 0.0f || (VALIDAR && kEspiracion * sqrtf(s[p]) < PICO_MIN_LMIN)) ev.codigo = ESPIRO_E5_SIN_SOPLIDO;
   else {
     // 2) Hacia atrás: hasta que cae bajo el umbral, y después por la curva (muestra a muestra) hasta el
     //    cruce por cero. Acá se usa la señal sin suavizar: la media móvil corre el borde hacia atrás.
@@ -312,7 +327,8 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
     for (int k = inicio - 1; reposoOk && k >= 0 && (b[inicio].tiempo_s - b[k].tiempo_s) <= REPOSO_MIN_S; k--)
       if (s[k] > umbral) reposoOk = false;
 
-    if (!reposoOk)                                                       ev.codigo = ESPIRO_E6_SOPLO_ANTES;
+    if (!VALIDAR)                                                        ev.codigo = ESPIRO_OK;
+    else if (!reposoOk)                                                  ev.codigo = ESPIRO_E6_SOPLO_ANTES;
     else if (!quieto || b[n - 1].tiempo_s - b[fin].tiempo_s < FIN_MIN_S) ev.codigo = ESPIRO_E7_NO_TERMINO;
     else                                                                 ev.codigo = ESPIRO_OK;
   }
@@ -342,7 +358,7 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
     b[k].volumen_L = vol;   // 0 antes, integral durante, constante después
   }
 
-  if (vol < VOLUMEN_MIN_L) {
+  if (VALIDAR && vol < VOLUMEN_MIN_L) {
     ev.codigo = ESPIRO_E8_SIN_VOLUMEN;
     for (int k = 0; k < n; k++) b[k].volumen_L = 0.0f;   // el flujo ya quedó solo en la ventana
     return ev;
@@ -395,7 +411,7 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
       float tUlt = tFin;
       for (int k2 = segIni[e] - 1; k2 > fin; k2--)
         if (signo[k2] > 0 && fabsf(d[k2]) > umbral) { tUlt = b[k2].tiempo_s; break; }
-      if (b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
+      if (VALIDAR && b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
       float pico = 0.0f;
       for (int k2 = segIni[e]; k2 <= segFin[e]; k2++) pico = std::max(pico, si(k2));
       if (pico > mejorPico) { mejorPico = pico; elegido = (int)e; }
@@ -461,7 +477,8 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
   }
 
   // 8) Criterios de aceptación (se informa el primero que falla). E3 (FIVC > FVC) no se evalúa todavía.
-  if (t0 - b[0].tiempo_s > INICIO_MAX_S)                  ev.codigo = ESPIRO_E1_INICIO_TARDIO;
+  if (!VALIDAR)                                            ev.codigo = ESPIRO_OK;
+  else if (t0 - b[0].tiempo_s > INICIO_MAX_S)             ev.codigo = ESPIRO_E1_INICIO_TARDIO;
   else if (bev > std::max(BEV_MIN_L, BEV_FRACCION * vol)) ev.codigo = ESPIRO_E2_BEV_ALTO;
   else                                                    ev.codigo = ESPIRO_OK;
 

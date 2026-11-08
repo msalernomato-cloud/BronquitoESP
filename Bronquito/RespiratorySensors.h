@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <functional>
+#include <Ticker.h>
 
 struct MuestraEspiro {
   float tiempo_s;
@@ -36,7 +37,7 @@ struct Pasabajos10Hz {
 enum ResultadoCaptura {
   CAPTURA_OK,
   CAPTURA_CANCELADA,     // tocaron "Cancelar"
-  CAPTURA_SIN_MEMORIA    // no hay memoria contigua para el buffer, o no se pudo crear el timer
+  CAPTURA_SIN_MEMORIA    // no hay memoria contigua para el buffer
 };
 
 // Solo MIDE: lee el sensor, filtra, convierte a flujo o presión y guarda las muestras.
@@ -45,7 +46,7 @@ class RespiratorySensors {
 public:
   RespiratorySensors(int pinFlujo = 36, int pinPIM = 39);
 
-  void begin();          // configura el ADC, el timer y la tarea de muestreo
+  void begin();          // configura el ADC
   void realizarTara();   // mide el cero con el paciente quieto (llamar DESPUÉS de dibujar la pantalla)
 
   // false = prueba sin PIM
@@ -57,11 +58,15 @@ public:
   float getKInspiracion() const { return K_INSPIRACION; }  // Q = K * sqrt(dV), aire entrando
   float periodoMuestreo() const { return DT; }            // 0,01 s
 
-  // ---- Captura por interrupción ----
-  // Un timer de hardware interrumpe cada 10 ms (100 Hz). La interrupción NO lee el ADC
-  // (analogReadMilliVolts no se puede usar dentro de una ISR y 16 lecturas tardan demasiado): despierta
-  // una tarea de FreeRTOS de prioridad alta que toma la muestra. Esa tarea interrumpe al loop (pantalla,
-  // táctil, serie), así que el período no depende de lo que esté haciendo el resto del programa.
+  // ---- Captura por interrupción de software (Ticker) ----
+  // Igual que el ejemplo de clase con Ticker: InterrupcionSoftware.attach(periodo, funcion).
+  // Cada 1 ms (1 kHz) el Ticker llama a alInterrumpir(), que hace UNA lectura de cada canal:
+  //   1. Mediana de 3: con las dos lecturas anteriores. Borra los picos sueltos del ADC.
+  //   2. Promedio de los últimos 20 ms (20 lecturas) = un ciclo entero de la red: anula los 50 Hz
+  //      y sus armónicos, y hace de antialiasing antes de bajar a 100 Hz.
+  //   3. Cada 10 lecturas (10 ms) sale una muestra: pasabajos de 10 Hz, flujo, presión y sentido.
+  // El Ticker del ESP32 corre la función en la tarea de esp_timer (no dentro de una ISR), por eso
+  // ahí se puede usar analogReadMilliVolts. La pantalla, el táctil y el serie siguen en el loop.
   //
   // capturar() mide durante 'duracionMs' y, mientras tanto:
   //   - imprime cada muestra por el monitor serie (CSV);
@@ -110,13 +115,14 @@ private:
   //   (la salida amplificada, con el no inversor U1B x3,7 -> G = 51,14 y K = 113,88, queda en J3 por si
   //    hace falta más resolución: en ese caso usar GANANCIA_PIM = G_INA_PIM * 3,7f)
   //   P [cmH2O] = Vneto * 10,19716 / (G * 1,7511 mV/kPa)
-  // Mide la PIM y, en la espirometría, dice si el flujo es espiratorio (presión positiva)
-  // o inspiratorio (negativa).
+  // Mide la PIM y, en la espirometría, dice el sentido del flujo. Con la placa actual la presión da
+  // POSITIVA al inspirar y NEGATIVA al espirar (ver AnalisisEspiro::SIGNO_PRESION_ESPIRACION).
   const float RG_INA_PIM_OHM = 3900.0f;
   const float GANANCIA_PIM   = 1.0f + 50000.0f / RG_INA_PIM_OHM;      // 13,82
   const float SENS_PSA_V_KPA = 0.0017511f;                            // 1,7511 mV/kPa (hoja de datos)
   const float K_PIM          = 10.19716f / (GANANCIA_PIM * SENS_PSA_V_KPA);   // ≈ 421,35 cmH2O/V
-  // Si al EXHALAR la presión da negativa (la manguera está en el otro puerto del sensor), poner -1
+  // La presión se guarda tal como la mide el sensor (positiva al inspirar). No cambiar este signo para
+  // arreglar el sentido: eso se ajusta con AnalisisEspiro::SIGNO_PRESION_ESPIRACION.
   const float SIGNO_PRESION  = 1.0f;
 
   const float ZONA_MUERTA_V = 0.002f;
@@ -125,8 +131,7 @@ private:
   const int   N_FIN_EVENTO  = 5;
   const float DT            = 0.010f; // 100 Hz nominal
 
-  const int   N_PROM_FLUJO  = 16;
-  const int   N_PROM_PIM    = 16;   // igual que el flujo: menos ruido en la presión
+  const int   N_PROM_TARA   = 16;   // lecturas seguidas por punto en la tara (fuera del Ticker)
 
   float vZeroFlujo;
   float vZeroPIM;
@@ -145,9 +150,15 @@ private:
 
   float leerV(int pin, int nProm) const;
 
-  static const uint32_t PERIODO_US = 10000;     // 100 Hz (coincide con DT)
-  hw_timer_t *timerMuestreo = nullptr;
-  TaskHandle_t tareaMuestreoHandle = nullptr;
+  // ---- Muestreo por Ticker ----
+  static const uint32_t PERIODO_LECTURA_MS = 1;    // una lectura de cada canal cada 1 ms (1 kHz)
+  static const int LECTURAS_POR_MUESTRA    = 10;   // 10 lecturas = 10 ms -> muestras a 100 Hz (DT)
+  static const int N_VENTANA_50HZ          = 20;   // 20 lecturas = 20 ms = un ciclo de 50 Hz
+  Ticker InterrupcionSoftware;
+  uint16_t ventanaFlujo[N_VENTANA_50HZ], ventanaPIM[N_VENTANA_50HZ];   // últimas lecturas (mV, ya con mediana)
+  uint32_t sumaFlujo = 0, sumaPIM = 0;            // suma de la ventana (se actualiza en cada lectura)
+  uint16_t previasFlujo[2], previasPIM[2];        // dos lecturas crudas anteriores (para la mediana de 3)
+  int idxVentana = 0, lecturasDesdeMuestra = 0;
   volatile bool muestreando = false;
   volatile bool congelado = false;
   volatile int saltarPendiente = 0;
@@ -159,16 +170,15 @@ private:
   std::vector<MuestraEspiro> bufferMuestras;
 
   void iniciarManiobra();
-  MuestraEspiro procesarMuestra();
+  MuestraEspiro procesarMuestra(float vFlujoBruto, float vPIMBruto);
   String obtenerLineaCSV(const MuestraEspiro &m) const;
-  void configurarMuestreo();                    // crea el timer y la tarea (se llama desde begin)
   bool iniciarMuestreo(size_t maxMuestras);     // arranca una captura nueva (llama a iniciarManiobra)
-  void detenerMuestreo();                       // para el timer y deja bufferMuestras con lo tomado
+  void detenerMuestreo();                       // para el Ticker y deja bufferMuestras con lo tomado
+  void reiniciarVentanas();                     // llena la ventana de 20 ms con el cero de la tara
 
-  static RespiratorySensors *instancia;
-  static void ARDUINO_ISR_ATTR isrMuestreo();
-  static void tareaMuestreo(void *arg);
-  void tomarMuestraTimer();
+  static void alInterrumpir(RespiratorySensors *s);   // la llama el Ticker cada 1 ms
+  void leerADC();                                     // una lectura por canal + mediana + ventana
+  void tomarMuestra();                                // cada 10 lecturas: guarda una muestra
 };
 
 #endif

@@ -94,6 +94,7 @@ struct ResumenMedicion {
 // ---- Señal de una medición leída del .csv (para graficar) ------------------
 struct SerieMedicion {
   std::vector<float> t, p, q, v;   // tiempo (s), presión (cmH2O), flujo (L/min), volumen (L)
+  std::vector<float> ve;           // volumen SOLO de la espiración (L): para la curva volumen-tiempo
 };
 
 class TarjetaSD {
