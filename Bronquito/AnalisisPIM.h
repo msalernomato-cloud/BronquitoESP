@@ -10,10 +10,9 @@
 //      SUAVIZADO_S) supera FRACCION_ESFUERZO de su pico; caídas más cortas que HUECO_MAX_S no lo cortan.
 //      Así las oscilaciones de la presión durante el esfuerzo no lo parten. Tiene que durar ESFUERZO_MIN_S (1,5 s).
 //   3. PIM sostenida = la mayor presión MEDIA en una ventana de exactamente VENTANA_S (1 s) dentro del esfuerzo.
-// Por sesión (solo si EXIGIR_REPRODUCIBILIDAD = true):
-//   4. Se hacen hasta 8 intentos y se corta cuando hay 3 reproducibles:
-//      (máximo - mínimo) <= 10 % del máximo. Se informa el MAYOR de esos tres.
-//   Con EXIGIR_REPRODUCIBILIDAD = false se hace un solo intento.
+// Por sesión:
+//   4. Se hacen hasta INTENTOS_MAX (8) intentos y se corta cuando hay INTENTOS_REPRO (3) reproducibles:
+//      (máximo - mínimo) <= TOLERANCIA_REPRO del máximo. Se informa el MAYOR de esos tres.
 //
 // Referencias: ATS/ERS Statement on Respiratory Muscle Testing. Am J Respir Crit Care Med 2002;166:518-624.
 // Laveneziana P et al. ERS statement on respiratory muscle testing at rest and during exercise.
@@ -22,44 +21,47 @@
 #include <vector>
 #include <algorithm>
 
-// Códigos de resultado de la PIM (tabla de criterios del proyecto).
-// Se guardan en el .json ("codigo_error") y se muestran en pantalla como "E<n>".
+// Códigos de resultado de la PIM ("codigo_error" en el .json, "E<n>" en pantalla).
+// 1 y 2 son los de la tabla de criterios del proyecto.
 enum CodigoPIM {
-  PIM_OK                 = 0,
-  PIM_E1_ESFUERZO_CORTO  = 1,   // el esfuerzo se sostuvo menos de 1,5 s                       (activo)
-  PIM_E2_SIN_ESFUERZO    = 2,   // la presión nunca superó 10 cmH2O                             (activo)
-  PIM_E3_NO_REPRODUCIBLE = 3,   // sin 3 intentos dentro del 10 % en 8 intentos                 (configurable)
-  PIM_E4_CANCELADA       = 4    // la canceló el usuario (no se guarda nada)                    (activo)
+  PIM_RES_OK               = 0,
+  PIM_RES_E1_FUGA          = 1,   // reservado: necesita medir flujo y presión a la vez (dos sensores)
+  PIM_RES_E2_ESFUERZO_CORTO = 2,  // el esfuerzo no se sostuvo ESFUERZO_MIN_S
+  PIM_RES_E3_SIN_ESFUERZO  = 3,   // la presión nunca superó PRESION_MIN_CMH2O
+  PIM_RES_E4_NO_REPRODUCIBLE = 4, // (sesión) INTENTOS_MAX intentos sin INTENTOS_REPRO reproducibles
+  PIM_RES_E6_CANCELADA     = 6    // la canceló el usuario (no se guarda nada)
 };
 
 inline const char *textoCodigoPIM(int c) {
   switch (c) {
-    case PIM_OK:                 return "PIM válida";
-    case PIM_E1_ESFUERZO_CORTO:  return "Esfuerzo muy corto (< 1,5 s)";
-    case PIM_E2_SIN_ESFUERZO:    return "No se detectó el esfuerzo";
-    case PIM_E3_NO_REPRODUCIBLE: return "Sin 3 intentos reproducibles";
-    case PIM_E4_CANCELADA:       return "Maniobra cancelada";
-    default:                     return "Error desconocido";
+    case PIM_RES_OK:                 return "PIM válida";
+    case PIM_RES_E1_FUGA:            return "Fuga detectada en boquilla";
+    case PIM_RES_E2_ESFUERZO_CORTO:  return "Esfuerzo muy corto (< 1,5 s)";
+    case PIM_RES_E3_SIN_ESFUERZO:    return "No se detectó el esfuerzo";
+    case PIM_RES_E4_NO_REPRODUCIBLE: return "Sin 3 intentos reproducibles";
+    case PIM_RES_E6_CANCELADA:       return "Maniobra cancelada";
+    default:                         return "Error desconocido";
   }
 }
 
 namespace AnalisisPIM {
-  const float PRESION_MIN_CMH2O = 10.0f;   // E2: por debajo de esto no hubo esfuerzo
+  const float PRESION_MIN_CMH2O = 10.0f;   // por debajo de esto no hubo esfuerzo
   // Tolerancia a las oscilaciones (si la PIM sigue dando E2 con un esfuerzo real, aflojar estos tres):
   const float SUAVIZADO_S       = 0.30f;   // media móvil para detectar el esfuerzo (no para calcular la PIM)
   const float FRACCION_ESFUERZO = 0.40f;   // el esfuerzo es lo que supera este % del pico suavizado
   const float HUECO_MAX_S       = 0.30f;   // caídas más cortas que esto no cortan el esfuerzo
-  const float ESFUERZO_MIN_S    = 1.5f;    // E1
+  const float ESFUERZO_MIN_S    = 1.5f;    // E2
   const float VENTANA_S         = 1.0f;    // PIM sostenida = mejor media en esta ventana
   const float OFFSET_MAX_CMH2O  = 5.0f;    // corrección máxima del cero de la tara
-  const float TOLERANCIA_REPRO  = 0.10f;   // E3: intentos con (máx - mín) <= 10 % del máx
+  const float TOLERANCIA_REPRO  = 0.10f;   // 3 intentos con (máx - mín) <= 10 % del máx
 
-  // ---- E3: REPRODUCIBILIDAD (configurable) ----
-  // true:  protocolo ATS/ERS, hasta 8 intentos y se corta cuando hay 3 reproducibles (si no, E3).
-  // false: un solo intento; vale si cumple E1 y E2.
-  const bool  EXIGIR_REPRODUCIBILIDAD = false;
-  const int   INTENTOS_REPRO    = EXIGIR_REPRODUCIBILIDAD ? 3 : 1;
-  const int   INTENTOS_MAX      = EXIGIR_REPRODUCIBILIDAD ? 8 : 1;
+  // ---- MODO PRUEBA (para ver la señal cruda) ----
+  // VALIDAR_PIM = false: no se exige ningún criterio (ni duración ni esfuerzo parejo). Cualquier captura se
+  // acepta y se guarda; la PIM informada es la mejor media de 1 s de TODA la captura (solo como referencia).
+  // Para volver al protocolo: VALIDAR_PIM = true, INTENTOS_REPRO = 3, INTENTOS_MAX = 8.
+  const bool  VALIDAR_PIM       = false;
+  const int   INTENTOS_REPRO    = 1;
+  const int   INTENTOS_MAX      = 1;
 }
 
 struct IntentoPIM {
@@ -79,7 +81,7 @@ template <class M>
 IntentoPIM analizarIntentoPIM(std::vector<M> &b) {
   using namespace AnalisisPIM;
   IntentoPIM r = {};
-  r.codigo = PIM_E2_SIN_ESFUERZO;
+  r.codigo = PIM_RES_E3_SIN_ESFUERZO;
   const int n = (int)b.size();
   if (n < 10) return r;
 
@@ -118,7 +120,7 @@ IntentoPIM analizarIntentoPIM(std::vector<M> &b) {
   for (int i = 0; i < n; i++) r.pico_cmH2O = std::max(r.pico_cmH2O, pr[i]);   // pico sin suavizar
   int p = 0;
   for (int i = 1; i < n; i++) if (s[i] > s[p]) p = i;
-  if (s[p] < PRESION_MIN_CMH2O) return r;   // E2: nunca superó 10 cmH2O
+  if (VALIDAR_PIM && s[p] < PRESION_MIN_CMH2O) return r;
 
   // Tramo de esfuerzo alrededor del pico suavizado
   const float umbral = std::max(PRESION_MIN_CMH2O, FRACCION_ESFUERZO * s[p]);
@@ -134,6 +136,12 @@ IntentoPIM analizarIntentoPIM(std::vector<M> &b) {
   r.tInicioEsfuerzo_s = b[ini].tiempo_s;
   r.tFinEsfuerzo_s = b[fin].tiempo_s;
   r.duracionEsfuerzo_s = r.tFinEsfuerzo_s - r.tInicioEsfuerzo_s;
+
+  // Modo prueba: la ventana de 1 s se busca en TODA la captura y no hay criterios
+  if (!VALIDAR_PIM) {
+    ini = 0;
+    fin = n - 1;
+  }
 
   // 3) Mejor media en una ventana de exactamente VENTANA_S dentro del esfuerzo (integral por trapecios)
   if (b[fin].tiempo_s - b[ini].tiempo_s >= VENTANA_S) {
@@ -160,9 +168,9 @@ IntentoPIM analizarIntentoPIM(std::vector<M> &b) {
     r.pim_cmH2O = std::max(0.0f, mejor);
   }
 
-  // E1: el esfuerzo tiene que sostenerse al menos 1,5 s
-  r.codigo = (r.duracionEsfuerzo_s >= ESFUERZO_MIN_S) ? PIM_OK : PIM_E1_ESFUERZO_CORTO;
-  r.valido = (r.codigo == PIM_OK);
+  if (!VALIDAR_PIM) r.codigo = PIM_RES_OK;
+  else r.codigo = (r.duracionEsfuerzo_s >= ESFUERZO_MIN_S) ? PIM_RES_OK : PIM_RES_E2_ESFUERZO_CORTO;
+  r.valido = (r.codigo == PIM_RES_OK);
   return r;
 }
 
@@ -211,12 +219,11 @@ inline int mayorGrupoReproducible(const IntentoPIM *in, int n) {
 
 // Cierra la sesión: valor informado, intento cuya curva se guarda y código
 inline void cerrarSesionPIM(ResumenPIM &r) {
-  using namespace AnalisisPIM;
   r.reproducible = buscarReproducibles(r.intentos, r.nIntentos, r.idxRepro);
   r.idxReportado = -1;
   if (r.reproducible) {
     r.idxReportado = r.idxRepro[0];
-    r.codigo = PIM_OK;
+    r.codigo = PIM_RES_OK;
     r.pim_cmH2O = r.intentos[r.idxReportado].pim_cmH2O;
     return;
   }
@@ -225,10 +232,8 @@ inline void cerrarSesionPIM(ResumenPIM &r) {
     if (r.intentos[i].valido && (r.idxReportado < 0 || r.intentos[i].pim_cmH2O > r.intentos[r.idxReportado].pim_cmH2O))
       r.idxReportado = i;
   if (r.idxReportado < 0 && r.nIntentos > 0) r.idxReportado = r.nIntentos - 1;
+  r.codigo = PIM_RES_E4_NO_REPRODUCIBLE;
   r.pim_cmH2O = 0.0f;
-  if (EXIGIR_REPRODUCIBILIDAD)  r.codigo = PIM_E3_NO_REPRODUCIBLE;
-  else if (r.idxReportado >= 0) r.codigo = r.intentos[r.idxReportado].codigo;   // un solo intento: su E1 o E2
-  else                          r.codigo = PIM_E2_SIN_ESFUERZO;
 }
 
 #endif

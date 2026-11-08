@@ -1,5 +1,7 @@
 #include "BronquitoNet.h"
 #include <HTTPClient.h>
+#include <sys/time.h>
+#include <time.h>
 #include "Secretos.h"
 
 void BronquitoNetwork::begin() {
@@ -164,13 +166,13 @@ bool BronquitoNetwork::pedirMensaje(String& mensaje, bool& compuViva) {
 // ---------------------------------------------------------------------------
 // El cuerpo no se imprime en el monitor serie (puede llevar el PIN).
 int BronquitoNetwork::llamarApi(const String& ip, const char* metodo, const String& ruta,
-                                const String& cuerpo, JsonDocument& resp) {
+                                const String& cuerpo, JsonDocument& resp, uint16_t timeoutMs) {
   resp.clear();
   if (!estaConectado() || ip.length() == 0) return SIN_RED;
 
   HTTPClient http;
   http.setConnectTimeout(3000);
-  http.setTimeout(5000);
+  http.setTimeout(timeoutMs);
   if (!http.begin("http://" + ip + ":" + String(PUERTO_SERVIDOR) + ruta)) return SIN_RED;
   http.addHeader("X-Device-Key", CLAVE_DISPOSITIVO);
   if (cuerpo.length() > 0) http.addHeader("Content-Type", "application/json");
@@ -217,6 +219,30 @@ String BronquitoNetwork::textoError(int http) {
   if (http == 404) return "No encontrado";
   if (http == 503) return "Equipo no configurado en la web";
   return "Error HTTP " + String(http);
+}
+
+// ---------------------------------------------------------------------------
+// RELOJ
+// ---------------------------------------------------------------------------
+void BronquitoNetwork::ponerHora(long epoch, int offsetMin) {
+  if (epoch < HORA_MINIMA) return;                 // la web no mandó una hora válida
+  struct timeval tv = { (time_t)epoch, 0 };
+  settimeofday(&tv, nullptr);
+  offsetMinutos = offsetMin;
+}
+
+bool BronquitoNetwork::horaValida() const {
+  return time(nullptr) >= HORA_MINIMA;
+}
+
+String BronquitoNetwork::fechaHoraLocal() const {
+  if (!horaValida()) return "sin hora";
+  time_t t = time(nullptr) + (time_t)offsetMinutos * 60;
+  struct tm tmLocal;
+  gmtime_r(&t, &tmLocal);
+  char buf[24];
+  strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmLocal);
+  return String(buf);
 }
 
 void BronquitoNetwork::olvidarRedes() {
@@ -277,4 +303,12 @@ void BronquitoNetwork::confirmarFrecuencia(JsonVariantConst idFrecuencia) {
   serializeJson(cuerpo, enviar);
   JsonDocument confirmacion;
   llamarApi(servidorGuardado(), "POST", "/dispositivo/frecuencia/confirmar", enviar, confirmacion);
+}
+
+// ---------------------------------------------------------------------------
+// PRUEBAS DE LA SD
+// ---------------------------------------------------------------------------
+// Una espirometría son ~25 KB: se le da más tiempo que al resto de los pedidos.
+int BronquitoNetwork::subirEvaluacion(const String& cuerpo, JsonDocument& resp) {
+  return llamarApi(servidorGuardado(), "POST", "/dispositivo/evaluaciones", cuerpo, resp, 10000);
 }

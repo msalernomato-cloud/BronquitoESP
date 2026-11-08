@@ -5,9 +5,7 @@
 #include <vector>
 #include "UI.h"
 #include "RespiratorySensors.h"
-#include "AnalisisEspiro.h"
-#include "AnalisisPIM.h"
-#include "TarjetaSD.h"
+#include "Evaluaciones.h"
 #include "Reloj.h"
 #include "BTPSSensor.h"
 
@@ -16,7 +14,7 @@
 // Si se cancela, no se guarda nada.
 class FlujoCalibracion {
 public:
-  FlujoCalibracion(BronquitoUI &ui, RespiratorySensors &sensoresResp, TarjetaSD &tarjeta, Reloj &reloj,
+  FlujoCalibracion(BronquitoUI &ui, RespiratorySensors &sensoresResp, Evaluaciones &evaluaciones, Reloj &reloj,
                    BTPSSensor &btps);
 
   // Recorrido completo. Al volver, la pantalla queda para que el .ino dibuje el menú de calibración
@@ -25,16 +23,16 @@ public:
 private:
   BronquitoUI &ui;
   RespiratorySensors &sensoresResp;
-  TarjetaSD &tarjeta;
+  Evaluaciones &evaluaciones;
   Reloj &reloj;
   BTPSSensor &btps;
 
-  // Una maniobra: pantalla, tara, captura (la hace el sensor) y, si es espirometría, su análisis.
-  // CAPTURA_CANCELADA si el usuario tocó "Cancelar"; CAPTURA_SIN_MEMORIA si no se pudo medir.
-  ResultadoCaptura capturarManiobra(bool esPim, uint32_t duracionMs, std::vector<MuestraEspiro> &salida, EventoEspiratorio &ev,
+  // Captura una maniobra (con la pantalla de progreso). false si se canceló.
+  // La captura está pegada a la pantalla (tara después de dibujar, muestras salteadas tras escribir),
+  // por eso vive acá y no en RespiratorySensors.
+  bool capturarManiobra(bool esPim, uint32_t duracionMs, std::vector<MuestraEspiro> &salida, EventoEspiratorio &ev,
                         float factorBTPS = 1.0f);
-  void calibracionCancelada(const String &calibId);   // el usuario canceló: se borra toda la calibración
-  void calibracionInterrumpida();                     // error al medir: se conserva lo ya guardado
+  void calibracionCancelada();
   // Lee el DHT22 (antes de medir: la lectura frena el programa unos ms) y calcula el factor BTPS
   CondicionesAmbiente leerAmbiente();
   // Guarda una espirometría que no validó (json con el código de error + csv completo) como

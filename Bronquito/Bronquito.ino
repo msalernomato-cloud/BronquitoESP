@@ -1,13 +1,14 @@
 #include <esp_system.h>
-#include "Estados.h"
+#include "SystemState.h"
 #include "UI.h"
-#include "TarjetaSD.h"
+#include "Storage.h"
 #include "BTPSSensor.h"
 #include "BronquitoNet.h"
 #include "RespiratorySensors.h"
+#include "BronquitoRTC.h"
 #include "Reloj.h"
+#include "Evaluaciones.h"
 #include "FlujoSesion.h"
-#include "FlujoConfiguracion.h"
 #include "FlujoConexion.h"
 #include "FlujoCalibracion.h"
 #include "FlujoHistorial.h"
@@ -16,7 +17,7 @@
 // HARDWARE
 // ---------------------------------------------------------------------------
 BronquitoUI ui;
-TarjetaSD tarjeta(19, 22, 23, 21);     // microSD: CS, SCK, MISO, MOSI
+BronquitoStorage storage(19, 22, 23, 21);
 BronquitoNetwork net;
 RespiratorySensors sensoresResp(36, 39);
 
@@ -25,28 +26,37 @@ BTPSSensor btps(DHT_PIN, DHT22);
 
 const int RTC_PIN_SDA = 17;
 const int RTC_PIN_SCL = 18;
-Reloj reloj;                           // RTC DS3231 + hora que manda la web
+BronquitoRTC rtc;
 
 // ---------------------------------------------------------------------------
 // ESTADO Y FLUJOS
 // ---------------------------------------------------------------------------
-EstadoSistema estadoActual = ESTADO_INICIO_SESION;
+SystemState currentState = STATE_LOGIN;
 
-FlujoSesion      sesion(ui, tarjeta, net, estadoActual);
-FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
-FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
-FlujoHistorial   historial(ui, tarjeta);
-FlujoConfiguracion configuracion(ui, tarjeta, net);
+Reloj            reloj(rtc, net);
+Evaluaciones     evaluaciones(storage);
+FlujoSesion      sesion(ui, storage, currentState);
+FlujoConexion    conexion(ui, net, storage, evaluaciones, rtc, sesion, currentState);
+FlujoCalibracion calibracion(ui, sensoresResp, evaluaciones, reloj, btps);
+FlujoHistorial   historial(ui, evaluaciones);
 
+// Comandos por el monitor serie: FORMATEAR, FORMATEAR!, HORA, OLVIDAR_RED
 void leerComandosSerie() {
   if (!Serial.available()) return;
   String c = Serial.readStringUntil('\n');
   c.trim();
   c.toUpperCase();
-  if (c == "FORMATEAR")        sesion.borrarDatos(false);
-  else if (c == "FORMATEAR!")  sesion.borrarDatos(true);
-  else if (c == "HORA")        reloj.imprimirEstado();
-  else if (c == "I2C")         reloj.escanearBus();
+  if (c == "FORMATEAR")        sesion.formatearDispositivo(false);
+  else if (c == "FORMATEAR!")  sesion.formatearDispositivo(true);
+  else if (c == "HORA") {
+    String hora = reloj.fechaHoraActual();
+    if (hora.length() == 0) hora = "sin hora válida";
+    Serial.println("[RTC] Hora actual: " + hora);
+    Serial.println(String("[RTC] Responde: ") + (rtc.disponible() ? "sí" : "no") +
+                   " | Perdió energía: " + (rtc.perdioEnergia() ? "sí" : "no"));
+    float temp;
+    if (rtc.leerTemperatura(temp)) Serial.println("[RTC] Temp. del chip: " + String(temp, 2) + " C");
+  }
   else if (c == "OLVIDAR_RED") conexion.olvidarRedes();
 }
 
@@ -70,29 +80,29 @@ void setup() {
   Serial.println("[BOOT] 3 - sensoresResp.begin()");
   sensoresResp.begin();
   btps.begin();
-  Serial.println("[BOOT] 4 - tarjeta.leerPerfil()");
+  Serial.println("[BOOT] 4 - storage.sync()");
 
-  EstadoTarjeta result = tarjeta.leerPerfil();
-  if (result == TARJETA_NO_ESTA) {
+  StorageStatus result = storage.sync();
+  if (result == ERR_NO_CARD) {
     ui.mostrarMensaje("Buscando la tarjeta microSD...");
     unsigned long t0 = millis();
-    while (result == TARJETA_NO_ESTA && millis() - t0 < 5000) {
+    while (result == ERR_NO_CARD && millis() - t0 < 5000) {
       delay(500);
-      result = tarjeta.leerPerfil(false);
+      result = storage.sync(false);
     }
   }
-  sesion.mostrarResultadoTarjeta(result);
+  sesion.manejarResultadoSincronizacion(result);
   Serial.println("[BOOT] 5 - login dibujado, iniciando RTC");
 
-  if (!reloj.iniciar(RTC_PIN_SDA, RTC_PIN_SCL)) Serial.println("[RELOJ] El RTC no responde: revisá SDA/SCL y alimentación");
-  else if (reloj.rtcPerdioLaHora())            Serial.println("[RELOJ] RTC detectado, pero perdió la hora");
-  else                                         Serial.println("[RELOJ] Hora: " + reloj.fechaHoraActual());
+  if (!rtc.begin(RTC_PIN_SDA, RTC_PIN_SCL))   Serial.println("[RTC] No responde: revisá SDA/SCL y alimentación");
+  else if (rtc.perdioEnergia())               Serial.println("[RTC] Detectado, perdió la hora");
+  else                                        Serial.println("[RTC] Hora: " + rtc.fechaHora());
 
   Serial.println(">>> Dispositivo Bronquito iniciado correctamente. <<<");
 }
 
 void loop() {
-  EventoPantalla evento = ui.detectarEvento(estadoActual);
+  UIEvent event = ui.checkTouch(currentState);
 
   conexion.actualizarConexion();
   leerComandosSerie();
@@ -100,78 +110,117 @@ void loop() {
   conexion.actualizarIndicador();
   sesion.revisarSD();
 
-  switch (evento) {
-    case EVENTO_CONECTAR:
+  switch (event) {
+    case EVENT_CONNECT_WEB:
       conexion.menuConectar();
       sesion.redibujarPantallaActual();
       break;
 
-    case EVENTO_VER_CONEXION:
+    case EVENT_SHOW_CONNECTION:
       conexion.mostrarEstado();
       sesion.redibujarPantallaActual();
       break;
 
-    case EVENTO_INGRESAR:          // solo con un paciente cargado en la tarjeta
-      if (sesion.ingresar()) {
-        Serial.println("[FSM] -> PIN");
-        estadoActual = ESTADO_PIN;
+    case EVENT_GOTO_PIN:
+      if (storage.isSynced()) {
+        Serial.println("[FSM] Perfil válido -> pantalla de PIN");
+        ui.showLoginFeedback();
+        delay(300);
+        currentState = STATE_PIN_INPUT;
+        ui.clearPin();
+        ui.drawPinScreen();
+      } else {
+        Serial.println("[FSM] BLOQUEADO: no hay perfil cargado.");
+        ui.showErrorMessage("¡Acceso bloqueado!", "Sincronizá con la web");
+        delay(1800);
+        ui.drawLoginScreen();
+      }
+      break;
+
+    case EVENT_GOTO_LOGIN:
+      Serial.println("[FSM] Volviendo a pantalla de Login");
+      currentState = STATE_LOGIN;
+      ui.drawLoginScreen();
+      break;
+
+    case EVENT_PIN_SUBMIT: {
+      Serial.println("[FSM] Validando PIN");
+      String pin = ui.getPinEntered();
+      bool entra = false;
+      bool usoOnline = storage.pinPendiente();
+
+      if (usoOnline) {
+        entra = (conexion.verificarPinOnline(pin) == 1);
+      } else {
+        entra = (pin == storage.getPin());
+      }
+
+      if (entra) {
+        Serial.println("[FSM] PIN CORRECTO -> Menú Principal");
+        ui.showPinStatus(true);
+        delay(800);
+        currentState = STATE_MAIN_MENU;
+        ui.drawMainMenu();
+      } else {
+        Serial.println("[FSM] PIN INCORRECTO");
+        if (!usoOnline) { ui.showPinStatus(false); delay(1000); }
         ui.clearPin();
         ui.drawPinScreen();
       }
       break;
+    }
 
-    case EVENTO_IR_AL_INICIO:
-      Serial.println("[FSM] Volviendo a pantalla de Login");
-      estadoActual = ESTADO_INICIO_SESION;
-      ui.drawLoginScreen();
-      break;
-
-    case EVENTO_PIN_INGRESADO:     // PIN correcto -> menú; incorrecto -> se queda en el PIN
-      if (sesion.validarPin()) {
-        Serial.println("[FSM] -> Menú principal");
-        estadoActual = ESTADO_MENU_PRINCIPAL;
-        ui.drawMainMenu();
-      } else {
-        ui.drawPinScreen();
-      }
-      break;
-
-    case EVENTO_ENTRENAMIENTO:
+    case EVENT_SELECT_TRAINING:
       Serial.println("[FSM] Opción: ENTRENAMIENTO MUSCULAR");
       break;
 
-    case EVENTO_CALIBRACION:
+    case EVENT_SELECT_CALIBRATION:
       Serial.println("[FSM] Entrando al Menú de Calibración");
-      estadoActual = ESTADO_MENU_CALIBRACION;
+      currentState = STATE_CALIB_MENU;
       ui.drawCalibMenu();
       break;
 
-    case EVENTO_CONFIGURACION:
+    case EVENT_SELECT_CONFIG:
       Serial.println("[FSM] Opción seleccionada: CONFIGURACIÓN");
-      configuracion.ejecutar();
+      conexion.mostrarConfiguracion();
       sesion.redibujarPantallaActual();
       break;
 
-    case EVENTO_HISTORIAL:
+    case EVENT_SELECT_HISTORY:
       Serial.println("[FSM] Opción seleccionada: HISTORIAL");
-      historial.ejecutar();
+      // true = tocó "Enviar a la web": sincroniza y vuelve al historial
+      while (historial.ejecutar()) {
+        conexion.enviarDatos();
+        if (currentState == STATE_LOGIN) break;   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+      }
       sesion.redibujarPantallaActual();
       break;
 
-    case EVENTO_CALIBRAR:
+    case EVENT_CALIB_START:
       Serial.println("[FSM] Calibración guiada: PIM + Espirometría");
       calibracion.ejecutar();
-      estadoActual = ESTADO_MENU_CALIBRACION;
+      conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se suben en la próxima
+      if (currentState == STATE_LOGIN) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+        sesion.redibujarPantallaActual();
+        break;
+      }
+      currentState = STATE_CALIB_MENU;
       ui.drawCalibMenu();
       break;
 
-    case EVENTO_VOLVER:   // "Volver" del menú de calibración
-      Serial.println("[FSM] Volviendo al Menú Principal");
-      estadoActual = ESTADO_MENU_PRINCIPAL;
-      ui.drawMainMenu();
+    case EVENT_CALIB_BACK_TO_MENU:
+      if (currentState == STATE_CALIB_MENU) {
+        Serial.println("[FSM] Volviendo al Menú Principal");
+        currentState = STATE_MAIN_MENU;
+        ui.drawMainMenu();
+      } else {
+        Serial.println("[FSM] Volviendo al Menú de Calibración");
+        currentState = STATE_CALIB_MENU;
+        ui.drawCalibMenu();
+      }
       break;
 
-    case EVENTO_NINGUNO:
+    case EVENT_NONE:
     default:
       break;
   }

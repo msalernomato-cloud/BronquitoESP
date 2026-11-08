@@ -3,7 +3,8 @@
 
 #include <Arduino.h>
 #include <vector>
-#include <functional>
+#include "AnalisisEspiro.h"
+#include "AnalisisPIM.h"
 
 struct MuestraEspiro {
   float tiempo_s;
@@ -15,110 +16,77 @@ struct MuestraEspiro {
   int fase;
 };
 
-// Pasabajos Butterworth de 2º orden, fc = 10 Hz, para fs = 100 Hz (forma directa II transpuesta).
-// Coeficientes por transformación bilineal: K = tan(pi*fc/fs), norma = 1 / (1 + sqrt(2)*K + K^2).
-// La información útil del flujo y la presión respiratoria está por debajo de unos 6,5 Hz.
-struct Pasabajos10Hz {
-  static constexpr float B0 = 0.067455f, B1 = 0.134911f, B2 = 0.067455f;
-  static constexpr float A1 = -1.142980f, A2 = 0.412802f;
-  float z1 = 0.0f, z2 = 0.0f;
-  // Arranca "asentado" en x0 (sin transitorio): se llama con el valor de la tara
-  void reiniciar(float x0) { z1 = x0 * (1.0f - B0); z2 = x0 * (B2 - A2); }
-  float filtrar(float x) {
-    float y = B0 * x + z1;
-    z1 = B1 * x - A1 * y + z2;
-    z2 = B2 * x - A2 * y;
-    return y;
-  }
-};
-
-// Resultado de una captura
-enum ResultadoCaptura {
-  CAPTURA_OK,
-  CAPTURA_CANCELADA,     // tocaron "Cancelar"
-  CAPTURA_SIN_MEMORIA    // no hay memoria contigua para el buffer, o no se pudo crear el timer
-};
-
-// Solo MIDE: lee el sensor, filtra, convierte a flujo o presión y guarda las muestras.
-// No analiza nada (eso lo hacen AnalisisEspiro y AnalisisPIM con las muestras que entrega).
 class RespiratorySensors {
 public:
   RespiratorySensors(int pinFlujo = 36, int pinPIM = 39);
 
-  void begin();          // configura el ADC, el timer y la tarea de muestreo
-  void realizarTara();   // mide el cero con el paciente quieto (llamar DESPUÉS de dibujar la pantalla)
+  void begin();
+  void realizarTara();
+  void iniciarManiobra();
+  MuestraEspiro procesarMuestra();
+  String obtenerLineaCSV(const MuestraEspiro& m) const;
+
+  // Se llama al TERMINAR la adquisición: toma la espiración de mayor flujo, retrocede por la curva
+  // hasta el cruce por cero (t0) y calcula el volumen solo dentro del evento (FVC, FEV1, PEF).
+  // Usa vFlujo_V con signo y sin zona muerta; el umbral sale del ruido de la captura. Ver AnalisisEspiro.h
+  // factorBTPS multiplica flujos y volúmenes (1 = sin corregir)
+  EventoEspiratorio calcularVolumenPostEvento(float factorBTPS = 1.0f);
 
   // false = prueba sin PIM
   bool usaPIM() const { return USAR_PIM; }
+  // true = la PIM se mide con el MISMO sensor diferencial del flujo (cambiando las mangueras)
+  bool pimEnSensorFlujo() const { return USAR_PIM && PIM_EN_SENSOR_FLUJO; }
+  // Con PIM en el sensor de flujo: true = la próxima maniobra mide presión (cmH2O), false = flujo.
+  // Llamar ANTES de realizarTara().
+  void configurarModoPresion(bool presion) { modoPresion = presion; }
 
-  // Datos que necesita el análisis posterior
-  float getVZeroFlujo() const { return vZeroFlujo; }      // cero de la tara (V)
-  float getKEspiracion() const  { return K_ESPIRACION; }   // Q = K * sqrt(dV), aire saliendo
-  float getKInspiracion() const { return K_INSPIRACION; }  // Q = K * sqrt(dV), aire entrando
-  float periodoMuestreo() const { return DT; }            // 0,01 s
+  float getVZeroFlujo() const { return vZeroFlujo; }
+  float getVZeroPIM() const { return vZeroPIM; }
+  float getKFlujo() const { return K_FLUJO; }
 
-  // ---- Captura por interrupción ----
-  // Un timer de hardware interrumpe cada 10 ms (100 Hz). La interrupción NO lee el ADC
+  // ---- Muestreo por interrupción ----
+  // Un timer de hardware interrumpe cada PERIODO_US (10 ms = 100 Hz). La interrupción NO lee el ADC
   // (analogReadMilliVolts no se puede usar dentro de una ISR y 16 lecturas tardan demasiado): despierta
   // una tarea de FreeRTOS de prioridad alta que toma la muestra. Esa tarea interrumpe al loop (pantalla,
   // táctil, serie), así que el período no depende de lo que esté haciendo el resto del programa.
-  //
-  // capturar() mide durante 'duracionMs' y, mientras tanto:
-  //   - imprime cada muestra por el monitor serie (CSV);
-  //   - cada 'cadaN' muestras llama a mostrar(últimaMuestra). Escribir en la pantalla mete un pico en el
-  //     ADC: mientras se ejecuta mostrar() y en las 3 muestras siguientes no se lee el ADC (se repite la
-  //     última muestra con el tiempo actualizado);
-  //   - cada 100 ms llama a cancelar(); si devuelve true, corta y descarta lo medido.
-  ResultadoCaptura capturar(uint32_t duracionMs, size_t cadaN,
-                            std::function<void(const MuestraEspiro &)> mostrar,
-                            std::function<bool()> cancelar);
+  void configurarMuestreo();                    // crea el timer y la tarea (se llama desde begin)
+  bool iniciarMuestreo(size_t maxMuestras);     // arranca una captura nueva (llama a iniciarManiobra)
+  void detenerMuestreo();                       // para el timer y deja bufferMuestras con lo tomado
+  size_t muestrasTomadas() const { return nMuestras; }
+  bool muestreoLleno() const { return nMuestras >= capacidad; }
+  MuestraEspiro muestra(size_t i) const { return bufferMuestras[i]; }
+  // Escribir en la pantalla mete un pico en la lectura analógica: mientras se escribe (congelar) y en las
+  // muestras siguientes (saltar) no se lee el ADC, se repite la última muestra con el tiempo actualizado.
+  void congelarMuestreo(bool c) { congelado = c; }
+  void saltarMuestras(int n) { saltarPendiente = n; }
 
-  // Pasa las muestras de la última captura a 'destino' (el sensor se queda sin ellas)
-  void entregarMuestras(std::vector<MuestraEspiro> &destino);
-  // Libera la memoria del buffer (si quedó algo)
-  void liberarMemoria() { std::vector<MuestraEspiro>().swap(bufferMuestras); }
+  // Buffer de muestras guardadas en RAM
+  std::vector<MuestraEspiro> bufferMuestras;
 
 private:
   const int _pinFlujo;
   const int _pinPIM;
 
-  // Configuración
+  // Configuration
   const bool USAR_PIM = true;
+  // PIM con el MPX2010 del venturi: entrada del venturi (lado boquilla) al puerto P2, P1 abierto al aire
+  // y la salida del venturi tapada. Al inspirar, P1 > P2 y la salida sube. Si conectan la boquilla a P1
+  // (y P2 al aire), la presión da negativa: en ese caso poner SIGNO_PRESION_PIM = -1.
+  const bool  PIM_EN_SENSOR_FLUJO = true;
+  const float SIGNO_PRESION_PIM   = 1.0f;
 
-  // ---- Constantes de conversión (placa "PIM ESPIROMETRÍA", circuito final) ----------------
-  // Las dos cadenas tienen la referencia en 1,65 V (U6B): sin presión, la salida queda cerca
-  // de 1,65 V y la tara mide ese valor exacto. Por eso la señal puede bajar o subir.
+  const float RG_INA_OHM     = 1000.0f;
+  const float GANANCIA_FLUJO = 1.0f + 50000.0f / RG_INA_OHM;   // 51 (con RG = 1k)
+  const float SENS_MPX_V_PA  = 1.25e-6f;                       // 1,25 mV/kPa
+  const float K_PA_A_LMIN    = 3.7848f;
+  const float K_FLUJO        = K_PA_A_LMIN / sqrtf(GANANCIA_FLUJO * SENS_MPX_V_PA);   // ≈ 474 (con RG = 1k)
 
-  // Canal de flujo (GPIO36): MPX2010DX -> INA128 (U2) -> no inversor (U1A)
-  //   INA128:      G = 1 + 50k / RG,  RG = R1 = 2,7k -> 19,52
-  //   no inversor: G = 1 + R4 / R6 = 1 + 39k / 10k   -> 4,9
-  //   Q [L/min] = 3,7848 * sqrt(dP [Pa])  (Venturi, Cd = 0,97)  y  dP = Vneto / (G * 1,25 uV/Pa)
-  const float RG_INA_FLUJO_OHM = 2700.0f;
-  const float G_INA_FLUJO      = 1.0f + 50000.0f / RG_INA_FLUJO_OHM;   // 19,52
-  const float G_NOINV_FLUJO    = 1.0f + 39000.0f / 10000.0f;          // 4,9
-  const float GANANCIA_FLUJO   = G_INA_FLUJO * G_NOINV_FLUJO;         // 95,64
-  const float SENS_MPX_V_PA    = 1.25e-6f;                            // 1,25 mV/kPa alimentado a 5 V
-  const float K_PA_A_LMIN      = 3.7848f;
-  const float K_TEORICA        = K_PA_A_LMIN / sqrtf(GANANCIA_FLUJO * SENS_MPX_V_PA);   // ≈ 346,2 L/min/sqrt(V)
-  // El venturi no es simétrico: cada sentido tiene su constante. Por ahora las dos son la teórica;
-  // cuando se calibre con la jeringa de 3 L, poner acá los valores medidos.
-  const float K_ESPIRACION     = K_TEORICA;
-  const float K_INSPIRACION    = K_TEORICA;
+  const float K_PIM         = 114.18f;   // sensor de presión aparte (PSA071040) en el pin de PIM
+  // MPX2010 como manómetro: cmH2O = dV / (ganancia * 1,25 uV/Pa * 98,0665 Pa/cmH2O)  -> ~160 cmH2O/V con G = 51
+  const float K_PRESION_MPX = 1.0f / (GANANCIA_FLUJO * SENS_MPX_V_PA * 98.0665f);
+  bool modoPresion = false;
 
-  // Canal de presión (GPIO39): PSA071040 -> INA128 (U3), salida SIN amplificar (MAN2, conector J7)
-  //   INA128: G = 1 + 50k / RG,  RG = R8 = 3,9k -> 13,82
-  //   (la salida amplificada, con el no inversor U1B x3,7 -> G = 51,14 y K = 113,88, queda en J3 por si
-  //    hace falta más resolución: en ese caso usar GANANCIA_PIM = G_INA_PIM * 3,7f)
-  //   P [cmH2O] = Vneto * 10,19716 / (G * 1,7511 mV/kPa)
-  // Mide la PIM y, en la espirometría, dice si el flujo es espiratorio (presión positiva)
-  // o inspiratorio (negativa).
-  const float RG_INA_PIM_OHM = 3900.0f;
-  const float GANANCIA_PIM   = 1.0f + 50000.0f / RG_INA_PIM_OHM;      // 13,82
-  const float SENS_PSA_V_KPA = 0.0017511f;                            // 1,7511 mV/kPa (hoja de datos)
-  const float K_PIM          = 10.19716f / (GANANCIA_PIM * SENS_PSA_V_KPA);   // ≈ 421,35 cmH2O/V
-  // Si al EXHALAR la presión da negativa (la manguera está en el otro puerto del sensor), poner -1
-  const float SIGNO_PRESION  = 1.0f;
-
+  const float ALPHA_FILTRO  = 0.30f;
   const float ZONA_MUERTA_V = 0.002f;
   const float UMBRAL_FASE   = 0.2f;
   const float ALPHA_BASE    = 0.02f;
@@ -126,13 +94,12 @@ private:
   const float DT            = 0.010f; // 100 Hz nominal
 
   const int   N_PROM_FLUJO  = 16;
-  const int   N_PROM_PIM    = 16;   // igual que el flujo: menos ruido en la presión
+  const int   N_PROM_PIM    = 4;
 
   float vZeroFlujo;
   float vZeroPIM;
   float vFlujoFiltrado;
   float vPIMFiltrado;
-  Pasabajos10Hz filtroFlujo, filtroPIM;
 
   float volumen_L;
   int fase;
@@ -154,16 +121,6 @@ private:
   volatile size_t nMuestras = 0;
   size_t capacidad = 0;
   MuestraEspiro ultimaMuestra = {0, 0, 0, 0, 0, 0, 0};
-
-  // Buffer de la captura en curso (lo escribe la tarea de muestreo)
-  std::vector<MuestraEspiro> bufferMuestras;
-
-  void iniciarManiobra();
-  MuestraEspiro procesarMuestra();
-  String obtenerLineaCSV(const MuestraEspiro &m) const;
-  void configurarMuestreo();                    // crea el timer y la tarea (se llama desde begin)
-  bool iniciarMuestreo(size_t maxMuestras);     // arranca una captura nueva (llama a iniciarManiobra)
-  void detenerMuestreo();                       // para el timer y deja bufferMuestras con lo tomado
 
   static RespiratorySensors *instancia;
   static void ARDUINO_ISR_ATTR isrMuestreo();

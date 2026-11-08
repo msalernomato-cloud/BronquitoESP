@@ -2,12 +2,12 @@
 
 static const int MAX_HIST = 30;
 
-FlujoHistorial::FlujoHistorial(BronquitoUI &ui, TarjetaSD &tarjeta) : ui(ui), tarjeta(tarjeta) {}
+FlujoHistorial::FlujoHistorial(BronquitoUI &ui, Evaluaciones &evaluaciones) : ui(ui), evaluaciones(evaluaciones) {}
 
 void FlujoHistorial::graficarEvaluacion(const String &id, bool esPim) {
   ui.mostrarMensaje("Cargando señal...");
-  SerieMedicion s;
-  if (!tarjeta.cargarSerie(id, s)) {
+  SerieEval s;
+  if (!evaluaciones.cargarSerie(id, s)) {
     ui.mostrarMensaje("No se pudo graficar", "Falta el archivo de datos", COLOR_ROJO_DEL);
     delay(2000);
     return;
@@ -19,66 +19,62 @@ void FlujoHistorial::graficarEvaluacion(const String &id, bool esPim) {
     return;
   }
 
-  // Tres gráficos; el botón pasa al siguiente. Espiración e inspiración en colores distintos
-  // (el signo del flujo dice cuál es cuál: la inspiración es negativa).
-  const float *q = s.q.data();
   int g = 0;
   while (true) {
-    int r;
-    if (g == 0)      r = ui.mostrarGrafico("Volumen en el tiempo", "Tiempo (s)", "Volumen (L)",
-                                           s.t.data(), s.v.data(), n, "Flujo / Volumen", q);
-    else if (g == 1) r = ui.mostrarGrafico("Flujo en función del volumen", "Volumen (L)", "Flujo (L/min)",
-                                           s.v.data(), q, n, "Flujo / Tiempo", q);
-    else             r = ui.mostrarGrafico("Flujo en el tiempo", "Tiempo (s)", "Flujo (L/min)",
-                                           s.t.data(), q, n, "Volumen / Tiempo", q);
+    int r = (g == 0)
+      ? ui.mostrarGrafico("Volumen en el tiempo", "Tiempo (s)", "Volumen (L)", s.t.data(), s.v.data(), n, "Flujo / Volumen")
+      : ui.mostrarGrafico("Flujo en función del volumen", "Volumen (L)", "Flujo (L/min)", s.v.data(), s.q.data(), n, "Volumen / Tiempo");
     if (r == 0) return;
-    g = (g + 1) % 3;
+    g ^= 1;
   }
 }
 
-// "--" si el valor no está en el archivo
-static String texto(float valor, int decimales) {
-  return isnan(valor) ? String("--") : String(valor, decimales);
-}
-
-void FlujoHistorial::verEvaluacion(const String &id, const String &fecha) {
-  ResumenMedicion r;
-  if (!tarjeta.leerResumen(id, r)) {
+void FlujoHistorial::verEvaluacion(const String &id, const String &fecha, const String &tipo) {
+  JsonDocument doc;
+  if (!evaluaciones.leerResumen(id, doc)) {
     ui.mostrarMensaje("No se pudo leer", "Archivo vacío o dañado", COLOR_ROJO_DEL);
     delay(2000);
     return;
   }
 
-  MetricaItem m[8];
+  auto val = [&](const char *clave, int dec) -> String {
+    return doc[clave].isNull() ? String("--") : String(doc[clave].as<float>(), dec);
+  };
+
+  MetricaItem m[6];
   int n = 0;
-  if (r.esPim) {
-    m[n++] = metrica("PIM sostenida (1 s)", texto(r.pimSostenida_cmH2O, 1), "cmH2O");
-    m[n++] = metrica("Presión pico", texto(r.pico_cmH2O, 1), "cmH2O");
-    m[n++] = metrica("Intentos realizados", r.intentos > 0 ? String(r.intentos) : String("--"), "");
-    m[n++] = metrica("Intento informado", r.intentoInformado > 0 ? String(r.intentoInformado) : String("--"), "");
+  bool esPim = tipo.startsWith("PIM");                // "PIM" o "PIM (E4)"
+  bool fallida = !(doc["valida"] | true);             // los archivos viejos no tienen "valida": eran válidos
+
+  if (esPim) {
+    m[n++] = metrica("PIM sostenida (1 s)", val("pim_sostenida_cmh2o", 1), "cmH2O");
+    m[n++] = metrica("Presión pico", val("pico_cmh2o", 1), "cmH2O");
+    int intentos = doc["intentos"].size();
+    m[n++] = metrica("Intentos realizados", intentos > 0 ? String(intentos) : String("--"), "");
+    m[n++] = metrica("Intento informado", val("intento_informado", 0), "");
   } else {
-    bool hayRelacion = !isnan(r.fvc_L) && !isnan(r.fev1_L) && r.fvc_L > 0.05f;
-    m[n++] = metrica("FVC (capacidad vital forzada)", texto(r.fvc_L, 2), "L");
-    m[n++] = metrica("FEV1 (volumen en 1 s)", texto(r.fev1_L, 2), "L");
-    m[n++] = metrica("FEV1 / FVC", hayRelacion ? String(100.0f * r.fev1_L / r.fvc_L, 1) : String("--"), "%");
-    m[n++] = metrica("PEF (flujo pico)", texto(r.pef_Lmin, 0), "L/min");
-    m[n++] = metrica("FIVC (cap. vital inspiratoria)", texto(r.fivc_L, 2), "L");
-    m[n++] = metrica("FIV1 (vol. inspirado en 1 s)", texto(r.fiv1_L, 2), "L");
-    m[n++] = metrica("PIF (flujo inspiratorio pico)", texto(r.pif_Lmin, 0), "L/min");
+    float fvc = doc["fvc"] | 0.0f, fev1 = doc["fev1"] | 0.0f;
+    bool ratioOk = !doc["fvc"].isNull() && !doc["fev1"].isNull() && fvc > 0.05f;
+    m[n++] = metrica("FVC (capacidad vital forzada)", val("fvc", 2), "L");
+    m[n++] = metrica("FEV1 (volumen en 1 s)", val("fev1", 2), "L");
+    m[n++] = metrica("FEV1 / FVC", ratioOk ? String(100.0f * fev1 / fvc, 1) : String("--"), "%");
+    m[n++] = metrica("PEF (flujo pico)", val("pef", 0), "L/min");
+    m[n++] = metrica("FIVC (cap. vital inspiratoria)", val("fivc", 2), "L");
+    m[n++] = metrica("FIV1 (vol. inspirado en 1 s)", val("fiv1", 2), "L");
   }
 
   String pie = "";
-  if (!r.valida)
-    pie = "Código E" + String(r.codigo) + " | " + r.error;
-  else if (!isnan(r.temperatura_c) || !isnan(r.humedad_pct))
-    pie = "Temp: " + texto(r.temperatura_c, 1) + " C | Humedad: " + texto(r.humedad_pct, 0) + " %";
+  if (fallida)
+    pie = "Código E" + String(doc["codigo_error"] | 0) + " | " + String(doc["error"] | "");
+  else if (!doc["temperatura_c"].isNull() || !doc["humedad_rel_pct"].isNull())
+    pie = "Temp: " + val("temperatura_c", 1) + " C | Humedad: " + val("humedad_rel_pct", 0) + " %";
 
-  const char *titulo = r.esPim ? (r.valida ? "Resumen: PIM" : "PIM fallida")
-                               : (r.valida ? "Resumen: Espirometría" : "Espirometría fallida");
+  const char *titulo = esPim ? (fallida ? "PIM fallida" : "Resumen: PIM")
+                              : (fallida ? "Espirometría fallida" : "Resumen: Espirometría");
   while (true) {
-    int opcion = ui.mostrarResumenCalibracion(titulo, fecha, m, n, pie);
-    if (opcion != 1) return;
-    graficarEvaluacion(id, r.esPim);
+    int r = ui.mostrarResumenCalibracion(titulo, fecha, m, n, pie);
+    if (r != 1) return;
+    graficarEvaluacion(id, esPim);
   }
 }
 
@@ -86,25 +82,25 @@ void FlujoHistorial::flujoCalibraciones() {
   String ids[MAX_HIST], fechas[MAX_HIST], tipos[MAX_HIST];
 
   ui.mostrarMensaje("Leyendo tarjeta SD...");
-  int n = tarjeta.listarMediciones(ids, fechas, tipos, MAX_HIST);
+  int n = evaluaciones.listar(ids, fechas, tipos, MAX_HIST);
   if (n < 0) {
     ui.mostrarMensaje("No se pudo leer", "No se detectó la tarjeta SD", COLOR_ROJO_DEL);
     delay(2000);
     return;
   }
 
-  int pagina = 0;   // se mantiene entre una evaluación y otra
   while (true) {
-    int sel = ui.elegirCalibracion(fechas, tipos, n, pagina);
+    int sel = ui.elegirCalibracion(fechas, tipos, n);
     if (sel < 0) return;
-    verEvaluacion(ids[sel], fechas[sel]);
+    verEvaluacion(ids[sel], fechas[sel], tipos[sel]);
   }
 }
 
-void FlujoHistorial::ejecutar() {
+bool FlujoHistorial::ejecutar() {
   while (true) {
     int op = ui.mostrarHistorial();
-    if (op < 0) return;
+    if (op < 0) return false;
+    if (op == 2) return true;
     if (op == 0) {
       flujoCalibraciones();
     } else {
