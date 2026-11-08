@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 
 #define MAX_REDES 8
+#define MAX_REDES_RECORDADAS 5   // redes con la contraseña guardada (si hay más, se olvida la menos usada)
 #define PUERTO_SERVIDOR 8000   // puerto de la web (FastAPI)
 #define SIN_RED -1000          // llamarApi: no hay WiFi o no hay compu guardada
 
@@ -55,8 +56,11 @@ public:
   // universidad (con usuario y contraseña) no aparecen. Ordenadas de más a menos señal.
   int escanear(RedWifi *redes, int max);
 
-  // Conecta (bloqueante, hasta timeoutMs). Solo guarda la red si conectó Y es compatible.
+  // Conecta (bloqueante, hasta timeoutMs). Solo recuerda la red y su contraseña si conectó Y es compatible.
   ResultadoWifi conectar(const String &ssid, const String &clave, uint32_t timeoutMs = 15000);
+
+  // true si ya se conectó antes a esa red: deja su contraseña en 'clave' (así no se vuelve a pedir)
+  bool claveRecordada(const String &ssid, String &clave);
 
   // Inicio de la IP de esta red, sin el último número (ej: "10.200.0.")
   String prefijoRed() const {
@@ -109,11 +113,14 @@ public:
   // Texto corto (sin acentos) para mostrar en pantalla según el código de llamarApi
   String textoError(int http);
 
-  // Borra la red y la compu guardadas y desconecta el WiFi
+  // Borra todas las redes recordadas y la compu guardada, y desconecta el WiFi
   void olvidarRedes();
 
 private:
   Preferences prefs;
+  // Redes recordadas en la memoria: "nRed" = cuántas, "rs<i>" = nombre, "rp<i>" = contraseña (la 0 es la última usada).
+  // "ssid"/"pass" = la última red, a la que se reconecta al prender.
+  void recordarRed(const String &ssid, const String &clave);
 };
 
 #endif

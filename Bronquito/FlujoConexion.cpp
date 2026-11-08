@@ -249,9 +249,15 @@ void FlujoConexion::flujoWifi() {
     int n = net.escanear(redes, MAX_REDES);
     String nombres[MAX_REDES];
     int rssi[MAX_REDES];
-    for (int i = 0; i < n; i++) { nombres[i] = redes[i].ssid; rssi[i] = redes[i].rssi; }
+    bool guardadas[MAX_REDES];
+    for (int i = 0; i < n; i++) {
+      String sinUso;
+      nombres[i] = redes[i].ssid;
+      rssi[i] = redes[i].rssi;
+      guardadas[i] = net.claveRecordada(nombres[i], sinUso);
+    }
 
-    int sel = ui.elegirRed(nombres, rssi, n);
+    int sel = ui.elegirRed(nombres, rssi, n, guardadas);
     if (sel == -3) {
       net.reconectarGuardada();
       return;
@@ -266,11 +272,27 @@ void FlujoConexion::flujoWifi() {
       ssid = nombres[sel];
     }
 
-    String clave = ui.pedirTexto("Contraseña de " + ssid);
-    if (clave == "") continue;
+    // Si ya se conectó antes a esta red, usa la contraseña guardada y no la pide
+    String clave;
+    bool recordada = net.claveRecordada(ssid, clave);
+    if (!recordada) {
+      clave = ui.pedirTexto("Contraseña de " + ssid);
+      if (clave == "") continue;
+    }
 
     ui.mostrarMensaje("Conectando...", ssid);
     ResultadoWifi r = net.conectar(ssid, clave);
+
+    if (r == RES_WIFI_FALLO && recordada) {
+      // La contraseña guardada no anduvo (la cambiaron, o la red está lejos): se pide de nuevo.
+      // Si con la nueva conecta, reemplaza a la guardada.
+      ui.mostrarMensaje("No se pudo conectar", "Ingresá la contraseña de nuevo", COLOR_ROJO_DEL);
+      delay(1800);
+      clave = ui.pedirTexto("Contraseña de " + ssid);
+      if (clave == "") continue;
+      ui.mostrarMensaje("Conectando...", ssid);
+      r = net.conectar(ssid, clave);
+    }
 
     if (r == RES_WIFI_OK) {
       ui.mostrarMensaje("¡Wi-Fi conectado!", ssid, COLOR_VERDE_OK);

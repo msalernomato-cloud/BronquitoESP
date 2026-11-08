@@ -35,7 +35,7 @@ public:
   void ofrecerEnvio();
   // Botón "Enviar a la web" del historial: sincroniza ya (sube las pruebas y atiende los pedidos del médico)
   void enviarDatos();
-  // Borra la red y la compu guardadas
+  // Borra todas las redes recordadas y la compu guardada
   void olvidarRedes();
 
 private:

@@ -84,7 +84,8 @@ public:
   int  elegirConexion(const String& ssid);
 
   void mostrarMensaje(const String &l1, const String &l2 = "", uint16_t color = BRONQUITO_CYAN);
-  int elegirRed(const String *nombres, const int *rssi, int n);
+  // guardadas[i] = true muestra "guardada" (no va a pedir la contraseña). Puede ser nullptr
+  int elegirRed(const String *nombres, const int *rssi, int n, const bool *guardadas = nullptr);
   String pedirTexto(const String &titulo, String inicial = "");
   String pedirCodigo(const String *lineas, int nLineas, const String &prefijo);
   // Pregunta con dos botones. true = botón derecho (textoSi), false = izquierdo (textoNo)

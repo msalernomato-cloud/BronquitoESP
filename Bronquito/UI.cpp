@@ -574,7 +574,7 @@ void BronquitoUI::mostrarMensaje(const String &l1, const String &l2, uint16_t co
   tft.setTextDatum(TL_DATUM);
 }
 
-int BronquitoUI::elegirRed(const String *nombres, const int *rssi, int n) {
+int BronquitoUI::elegirRed(const String *nombres, const int *rssi, int n, const bool *guardadas) {
   hasDot = false;
   if (n > 6) n = 6;
 
@@ -590,8 +590,13 @@ int BronquitoUI::elegirRed(const String *nombres, const int *rssi, int n) {
     tft.fillRoundRect(10, y, 460, 36, 6, COLOR_CAMPO_BG);
     tft.setTextColor(BRONQUITO_BROWN, COLOR_CAMPO_BG);
     tft.setTextSize(2);
-    escribir(nombres[i].substring(0, 28), 20, y + 18);
+    bool guardada = guardadas && guardadas[i];
+    escribir(nombres[i].substring(0, guardada ? 24 : 28), 20, y + 18);   // con "guardada" al lado entra menos
     tft.setTextSize(1);
+    if (guardada) {
+      tft.setTextColor(COLOR_VERDE_OK, COLOR_CAMPO_BG);
+      escribir("guardada", 330, y + 18);
+    }
     tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_CAMPO_BG);
     escribir(String(rssi[i]) + " dBm", 400, y + 18);
   }
