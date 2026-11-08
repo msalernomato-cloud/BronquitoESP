@@ -39,6 +39,7 @@ void TarjetaSD::olvidarPaciente(EstadoTarjeta motivo) {
 String TarjetaSD::textoLogin() const {
   if (estadoActual == TARJETA_OK)            return perfil.usuario;
   if (estadoActual == TARJETA_PERFIL_DANADO) return "Perfil dañado";
+  if (estadoActual == TARJETA_NO_ESTA)       return "Sin microSD";
   return "Sin sincronizar";
 }
 

@@ -10,6 +10,7 @@ FlujoSesion::FlujoSesion(BronquitoUI &ui, TarjetaSD &tarjeta, BronquitoNetwork &
 // =============================================================================
 void FlujoSesion::mostrarResultadoTarjeta(EstadoTarjeta resultado) {
   ultimaClaveSD = String((int)resultado) + "|" + tarjeta.usuario();
+  ultimoEstadoSD = resultado;
   ui.setUsuario(tarjeta.textoLogin());
   ui.setSynced(tarjeta.hayPaciente());
   ui.drawLoginScreen();
@@ -32,6 +33,7 @@ void FlujoSesion::mostrarResultadoTarjeta(EstadoTarjeta resultado) {
 void FlujoSesion::refrescarPerfilEnUI() {
   EstadoTarjeta st = tarjeta.leerPerfil(false);
   ultimaClaveSD = String((int)st) + "|" + tarjeta.usuario();
+  ultimoEstadoSD = st;
   ui.setUsuario(tarjeta.textoLogin());
   ui.setSynced(tarjeta.hayPaciente());
 }
@@ -47,10 +49,22 @@ void FlujoSesion::revisarSD() {
   EstadoTarjeta st = tarjeta.leerPerfil(false);
   String clave = String((int)st) + "|" + tarjeta.usuario();
   if (clave != ultimaClaveSD) {          // cambió la tarjeta o el paciente
+    bool sacada = (st == TARJETA_NO_ESTA && ultimoEstadoSD != TARJETA_NO_ESTA);
+    bool puesta = (st != TARJETA_NO_ESTA && ultimoEstadoSD == TARJETA_NO_ESTA);
     ultimaClaveSD = clave;
+    ultimoEstadoSD = st;
     Serial.println("[SESION] La SD cambió -> actualizando login");
     ui.setUsuario(tarjeta.textoLogin());
     ui.setSynced(tarjeta.hayPaciente());
+    if (sacada) {
+      Serial.println("[SESION] MicroSD desconectada");
+      ui.mostrarMensaje("MicroSD desconectada", "Volvé a colocar la tarjeta", COLOR_ROJO_DEL);
+      delay(1800);
+    } else if (puesta) {
+      Serial.println("[SESION] MicroSD conectada");
+      ui.mostrarMensaje("MicroSD conectada", "", COLOR_VERDE_OK);
+      delay(1500);
+    }
     ui.drawLoginScreen();
   }
 }
@@ -65,7 +79,10 @@ bool FlujoSesion::ingresar() {
     return true;
   }
   Serial.println("[SESION] Bloqueado: no hay perfil cargado");
-  ui.showErrorMessage("¡Acceso bloqueado!", "Sincronizá con la web");
+  if (tarjeta.estado() == TARJETA_NO_ESTA)
+    ui.showErrorMessage("¡Acceso bloqueado!", "Colocá la microSD");
+  else
+    ui.showErrorMessage("¡Acceso bloqueado!", "Sincronizá con la web");
   delay(1800);
   ui.drawLoginScreen();
   return false;

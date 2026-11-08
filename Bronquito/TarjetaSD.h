@@ -118,7 +118,7 @@ public:
   String pin() const        { return perfil.pin; }
   String pinVersion() const { return perfil.pin_version; }
   bool faltaPin() const     { return perfil.pin.length() == 0; }   // hay que verificarlo con la web
-  String textoLogin() const;   // lo que se muestra en el login: el usuario, "Sin sincronizar" o "Perfil dañado"
+  String textoLogin() const;   // lo que se muestra en el login: el usuario, "Sin sincronizar", "Sin microSD" o "Perfil dañado"
 
   bool guardarPerfil(JsonVariantConst perfilWeb);    // paciente nuevo que mandó la web
   bool guardarPin(const String &pin, const String &version);
