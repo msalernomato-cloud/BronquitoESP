@@ -154,13 +154,22 @@ void loop() {
 
     case EVENTO_HISTORIAL:
       Serial.println("[FSM] Opción seleccionada: HISTORIAL");
-      historial.ejecutar();
+      // true = tocó "Enviar a la web": sincroniza y vuelve al historial
+      while (historial.ejecutar()) {
+        conexion.enviarDatos();
+        if (estadoActual == ESTADO_INICIO_SESION) break;   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+      }
       sesion.redibujarPantallaActual();
       break;
 
     case EVENTO_CALIBRAR:
       Serial.println("[FSM] Calibración guiada: PIM + Espirometría");
       calibracion.ejecutar();
+      conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se suben en la próxima
+      if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+        sesion.redibujarPantallaActual();
+        break;
+      }
       estadoActual = ESTADO_MENU_CALIBRACION;
       ui.drawCalibMenu();
       break;

@@ -917,7 +917,8 @@ int BronquitoUI::mostrarHistorial() {
   tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_TARJETA_BG);
   escribir("Sesiones realizadas", 352, 155);
 
-  dibujarBoton(70, 245, 340, 50, "Volver al menú principal", COLOR_TEXTO_GRIS);
+  dibujarBoton(25, 230, 205, 60, "Volver al menú", COLOR_TEXTO_GRIS);
+  dibujarBoton(250, 230, 205, 60, "Enviar a la web", COLOR_VERDE_OK);
   tft.setTextDatum(TL_DATUM);
 
   while (true) {
@@ -925,7 +926,8 @@ int BronquitoUI::mostrarHistorial() {
     if (!leerToque(x, y)) continue;
     if (dentro(x, y, 25, 65, 205, 135))  return 0;
     if (dentro(x, y, 250, 65, 205, 135)) return 1;
-    if (dentro(x, y, 70, 245, 340, 50))  return -1;
+    if (dentro(x, y, 25, 230, 205, 60))  return -1;
+    if (dentro(x, y, 250, 230, 205, 60)) return 2;
   }
 }
 

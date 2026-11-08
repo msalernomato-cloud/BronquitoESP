@@ -506,6 +506,8 @@ int TarjetaSD::contarPendientes() {
       String r = ruta;
       r.toLowerCase();
       if (!r.endsWith(".json")) continue;
+      // Los que empiezan con "." los crea la compu al abrir la SD (ej. "._eval_...json" en una Mac): no son pruebas
+      if (ruta.substring(ruta.lastIndexOf('/') + 1).startsWith(".")) continue;
       File f = SD.open(ruta, FILE_READ);
       if (!f) { pendientes++; continue; }
       JsonDocument doc;
@@ -537,6 +539,98 @@ ResultadoFormato TarjetaSD::borrarTodo(bool forzar) {
   olvidarPaciente(TARJETA_SIN_PACIENTE);
   Serial.println(ok ? "[SD] Tarjeta borrada" : "[SD] No se pudo borrar todo");
   return ok ? FORMATO_OK : FORMATO_ERROR;
+}
+
+// =============================================================================
+// SUBIDA A LA WEB
+// =============================================================================
+std::vector<String> TarjetaSD::listarPendientes(int max) {
+  std::vector<String> pendientes;
+  if (!hayTarjeta()) return pendientes;
+
+  // listarArchivos() junta primero los nombres: no se abren archivos mientras se recorre la carpeta
+  JsonDocument filtro;
+  filtro["sincronizado"] = true;
+  for (const String &ruta : listarArchivos(CARPETA_MEDICIONES)) {
+    if ((int)pendientes.size() >= max) break;
+    String nombre = ruta.substring(ruta.lastIndexOf('/') + 1);
+    String minusculas = nombre;
+    minusculas.toLowerCase();
+    // Los que empiezan con "." los crea la compu al abrir la SD (ej. "._eval_...json" en una Mac): no son pruebas
+    if (nombre.startsWith(".") || !minusculas.endsWith(".json")) continue;
+    File f = SD.open(ruta, FILE_READ);
+    if (!f) continue;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f, DeserializationOption::Filter(filtro));
+    f.close();
+    if (!err && !(doc["sincronizado"] | false))   // un .json dañado no se puede subir
+      pendientes.push_back(nombre.substring(0, nombre.length() - 5));
+  }
+  return pendientes;
+}
+
+// Agrega 'texto' escapado para ir entre comillas en un JSON
+static void agregarTextoJson(String &destino, const String &texto) {
+  for (unsigned int i = 0; i < texto.length(); i++) {
+    char c = texto[i];
+    if (c == '"' || c == '\\') { destino += '\\'; destino += c; }
+    else if ((unsigned char)c >= 0x20) destino += c;   // los de control (\r, \t) no van en nombres ni en el .csv
+  }
+}
+
+bool TarjetaSD::armarEnvio(const String &archivo, const String &usuario, String &cuerpo) {
+  // El .json va tal cual está en la SD; solo se revisa que esté sano
+  File fj = SD.open(rutaMedicion(archivo, ".json"), FILE_READ);
+  if (!fj) return false;
+  String resumen = fj.readString();
+  fj.close();
+  {
+    JsonDocument doc;
+    if (deserializeJson(doc, resumen) || !doc.is<JsonObject>()) return false;
+  }
+
+  File fc = SD.open(rutaMedicion(archivo, ".csv"), FILE_READ);   // una PIM sin intento informado no tiene .csv
+  size_t tamCsv = fc ? fc.size() : 0;
+  cuerpo = "";
+  // Cada salto de línea del .csv pasa a ser "\n" (un carácter más por línea): sobra con tamCsv / 8
+  if (!cuerpo.reserve(resumen.length() + tamCsv + tamCsv / 8 + 200)) {
+    if (fc) fc.close();
+    Serial.println("[SUBIDA] Sin memoria para " + archivo);
+    return false;
+  }
+
+  cuerpo += "{\"usuario\":\"";
+  agregarTextoJson(cuerpo, usuario);
+  cuerpo += "\",\"archivo\":\"";
+  agregarTextoJson(cuerpo, archivo);
+  cuerpo += "\",\"resumen\":";
+  cuerpo += resumen;
+  if (!fc) {
+    cuerpo += ",\"csv\":null}";
+    return true;
+  }
+
+  cuerpo += ",\"csv\":\"";
+  while (fc.available()) {
+    String linea = fc.readStringUntil('\n');
+    linea.trim();
+    if (linea.length() == 0) continue;
+    agregarTextoJson(cuerpo, linea);
+    cuerpo += "\\n";
+  }
+  fc.close();
+  cuerpo += "\"}";
+  return true;
+}
+
+bool TarjetaSD::marcarSincronizado(const String &archivo) {
+  String ruta = rutaMedicion(archivo, ".json");
+  JsonDocument doc;
+  if (!leerJson(ruta, doc)) return false;
+  doc["sincronizado"] = true;
+  // escribirJsonSeguro() escribe a un .tmp y después renombra: si se corta la luz a mitad, el .json no queda roto.
+  // Compacto, como lo guarda guardarMedicion()
+  return escribirJsonSeguro(ruta, doc, false);
 }
 
 // =============================================================================

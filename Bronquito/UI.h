@@ -96,7 +96,7 @@ public:
   void mostrarFrecuencia(int sesiones, const bool *dias, const String& vigenteDesde, bool recienActualizada);
 
   // Historial
-  int  mostrarHistorial();   // 0 = Calibraciones, 1 = Entrenamientos, -1 = Volver al menú
+  int  mostrarHistorial();   // 0 = Calibraciones, 1 = Entrenamientos, 2 = Enviar a la web, -1 = Volver al menú
   // Lista paginada. Devuelve el índice elegido, o -1 = Volver. 'pagina' entra con la página a mostrar
   // y sale con la última que se vio (así, al volver de una evaluación, se sigue en la misma página)
   int  elegirCalibracion(const String *fechas, const String *tipos, int n, int &pagina);

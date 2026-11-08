@@ -84,7 +84,8 @@ public:
   // Pedido a la web: http://<ip>:PUERTO_SERVIDOR<ruta>, con el header X-Device-Key.
   // Devuelve el código HTTP (negativo si falló la conexión, SIN_RED si no hay red/compu).
   // Si la respuesta trae JSON, queda en 'resp'.
-  int llamarApi(const String& ip, const char* metodo, const String& ruta, const String& cuerpo, JsonDocument& resp);
+  int llamarApi(const String& ip, const char* metodo, const String& ruta, const String& cuerpo, JsonDocument& resp,
+                uint16_t timeoutMs = 5000);
 
   // POST /dispositivo/identificar. true si respondió 200 con ok:true.
   bool identificar(const String& ip, bool vacia, const String& usuarioActual, int pendientes, RespuestaIdentificar& r);
@@ -100,6 +101,10 @@ public:
   int pedirFrecuencia(const String& usuario, JsonDocument& resp);
   // POST /dispositivo/frecuencia/confirmar
   void confirmarFrecuencia(JsonVariantConst idFrecuencia);
+
+  // POST /dispositivo/evaluaciones: sube una prueba de la SD (el cuerpo lo arma TarjetaSD::armarEnvio).
+  // Devuelve el código HTTP. Si la web contesta un error, queda en resp["error"]
+  int subirEvaluacion(const String& cuerpo, JsonDocument& resp);
 
   // Texto corto (sin acentos) para mostrar en pantalla según el código de llamarApi
   String textoError(int http);
