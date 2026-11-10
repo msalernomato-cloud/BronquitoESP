@@ -347,6 +347,216 @@ void TarjetaSD::borrarMedicion(const String &id) {
 }
 
 // =============================================================================
+// ENTRENAMIENTOS
+// =============================================================================
+static const char *CARPETA_ENTRENAMIENTOS = "/ENTRENAMIENTOS";
+
+static String rutaEntrenamiento(const String &id, const char *extension) {
+  return String(CARPETA_ENTRENAMIENTOS) + "/" + id + extension;
+}
+
+String TarjetaSD::nuevoIdEntrenamiento(const String &fechaHora) {
+  String digitos = "";
+  for (unsigned int i = 0; i < fechaHora.length(); i++)
+    if (isDigit(fechaHora[i])) digitos += fechaHora[i];
+
+  String base = (digitos.length() >= 14 && digitos.substring(0, 4).toInt() >= 2024)
+                  ? "ent_" + digitos.substring(0, 8) + "_" + digitos.substring(8, 14)
+                  : String("ent_SINHORA");
+  auto usado = [&](const String &id) {
+    return SD.exists(rutaEntrenamiento(id, ".csv")) || SD.exists(rutaEntrenamiento(id, ".json")) ||
+           SD.exists(rutaEntrenamiento(id, ".csv.tmp"));
+  };
+  // Con hora: el id es la fecha (si ya existe, se le agrega _2, _3...). Sin hora: ent_SINHORA_1, _2...
+  if (base != "ent_SINHORA" && !usado(base)) return base;
+  int n = (base == "ent_SINHORA") ? 1 : 2;
+  String id;
+  do { id = base + "_" + String(n++); } while (usado(id));
+  return id;
+}
+
+bool TarjetaSD::iniciarEntrenamiento(const String &id) {
+  if (id.length() == 0 || !hayTarjeta()) return false;
+  if (!SD.exists(CARPETA_ENTRENAMIENTOS) && !SD.mkdir(CARPETA_ENTRENAMIENTOS)) return false;
+  String temporal = rutaEntrenamiento(id, ".csv.tmp");
+  SD.remove(temporal);
+  archivoEntrenamiento = SD.open(temporal, FILE_WRITE);
+  if (!archivoEntrenamiento) return false;
+  errorEntrenamiento = false;
+  muestrasEntrenamiento = 0;
+  // Mismas columnas que las evaluaciones (ver escribirCsv)
+  if (archivoEntrenamiento.println("tiempo_ms,presion_cmh2o,flujo_lmin,v_flujo_v,v_pim_v") == 0) {
+    archivoEntrenamiento.close();
+    SD.remove(temporal);
+    return false;
+  }
+  return true;
+}
+
+bool TarjetaSD::agregarMuestrasEntrenamiento(const MuestraEspiro *muestras, size_t cantidad) {
+  if (!archivoEntrenamiento) return false;
+  char linea[80];
+  for (size_t i = 0; i < cantidad; i++) {
+    const MuestraEspiro &m = muestras[i];
+    int largo = snprintf(linea, sizeof(linea), "%ld,%.2f,%.2f,%.4f,%.4f\n", lroundf(m.tiempo_s * 1000.0f),
+                         m.presion_cmH2O, m.flujo_Lmin, m.vFlujo_V, m.vPIM_V);
+    if (largo <= 0 || archivoEntrenamiento.write((const uint8_t *)linea, largo) != (size_t)largo) {
+      errorEntrenamiento = true;
+      Serial.println("[SD] Error al escribir el entrenamiento");
+      return false;
+    }
+  }
+  muestrasEntrenamiento += cantidad;
+  archivoEntrenamiento.flush();   // si se corta la luz, lo medido hasta acá queda en la tarjeta
+  return true;
+}
+
+bool TarjetaSD::cerrarEntrenamiento() {
+  if (archivoEntrenamiento) archivoEntrenamiento.close();
+  return !errorEntrenamiento;
+}
+
+bool TarjetaSD::cargarSenalEntrenamiento(const String &id, AnalisisEntrenamiento::SenalEntrenamiento &senal) {
+  using namespace AnalisisEntrenamiento;
+  senal.liberar();
+  if (id.length() == 0 || errorEntrenamiento || !hayTarjeta()) return false;
+  cerrarEntrenamiento();
+
+  // Memoria: la señal va en 4 vectores separados (bloques más chicos que uno solo) y después el
+  // análisis pide lo suyo. Se revisa antes de reservar para no quedarse sin memoria a mitad de camino.
+  size_t n = muestrasEntrenamiento + 16;
+  size_t total = memoriaSenal(n) + memoriaAnalisis(n);
+  Serial.printf("[MEM] Entrenamiento: %u muestras | necesita %u bytes | libre %u | mayor bloque %u\n",
+                (unsigned)n, (unsigned)total, (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+  if (ESP.getFreeHeap() < total + 16384 || ESP.getMaxAllocHeap() < n * sizeof(uint32_t) + 4096) {
+    Serial.println("[MEM] No hay memoria para analizar el entrenamiento");
+    return false;
+  }
+  senal.reservar(n);
+
+  File f = SD.open(rutaEntrenamiento(id, ".csv.tmp"), FILE_READ);
+  if (!f) return false;
+  char linea[96];
+  while (f.available() && senal.size() < n) {
+    size_t largo = f.readBytesUntil('\n', linea, sizeof(linea) - 1);
+    linea[largo] = '\0';
+    if (largo == 0 || !(isDigit(linea[0]) || linea[0] == '-')) continue;   // encabezado o línea vacía
+    // tiempo_ms,presion_cmh2o,flujo_lmin,v_flujo_v,v_pim_v
+    char *p = linea, *fin;
+    long tMs = strtol(p, &fin, 10);       if (*fin != ',') continue; p = fin + 1;
+    float presion = strtof(p, &fin);      if (*fin != ',') continue; p = fin + 1;
+    float flujo = strtof(p, &fin);        if (*fin != ',') continue; p = fin + 1;
+    float vFlujo = strtof(p, &fin);       if (fin == p) continue;
+    senal.agregar((uint32_t)std::max(0L, tMs), presion, flujo, vFlujo);
+  }
+  f.close();
+  return senal.size() > 0;
+}
+
+// Número redondeado para el .json; NAN -> null
+static void ponerNumero(JsonObject obj, const char *clave, float valor, int decimales) {
+  if (std::isnan(valor) || std::isinf(valor)) { obj[clave] = nullptr; return; }
+  double escala = pow(10.0, decimales);
+  obj[clave] = round((double)valor * escala) / escala;   // en double: así no queda 99.30000305
+}
+
+static void ponerCiclo(JsonObject obj, const char *clave, int ciclo) {
+  if (ciclo > 0) obj[clave] = ciclo;
+  else obj[clave] = nullptr;
+}
+
+bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float dcServo, const char *estado,
+                                     const char *fin, int ciclosObjetivo,
+                                     const AnalisisEntrenamiento::FeaturesEntrenamiento *features) {
+  if (id.length() == 0 || errorEntrenamiento || !hayTarjeta()) return false;
+  cerrarEntrenamiento();
+  String csv = rutaEntrenamiento(id, ".csv");
+  SD.remove(csv);
+  if (!SD.rename(rutaEntrenamiento(id, ".csv.tmp"), csv)) return false;
+
+  JsonDocument doc;
+  JsonObject raiz = doc.to<JsonObject>();
+  raiz["version"] = 1;
+  ponerNumero(raiz, "duracion_s", duracion_s, 2);
+  ponerNumero(raiz, "dc", dcServo, 1);            // duty cycle del PWM del servo (%), no el de la respiración
+  raiz["estado"] = estado;
+  raiz["fin"] = fin;
+  raiz["ciclos_objetivo"] = ciclosObjetivo;
+
+  if (!features) {
+    raiz["ciclos"] = nullptr;    // no se pudieron calcular (ver el monitor serie)
+    raiz["resumen"] = nullptr;
+  } else {
+    const AnalisisEntrenamiento::FeaturesEntrenamiento &F = *features;
+    JsonArray ciclos = raiz["ciclos"].to<JsonArray>();
+    for (const auto &c : F.ciclos) {
+      JsonObject o = ciclos.add<JsonObject>();
+      o["numero"] = c.numero;
+      ponerNumero(o, "t_inicio_s", c.t_inicio_s, 2);
+      ponerNumero(o, "t_fin_s", c.t_fin_s, 2);
+      ponerNumero(o, "ti_s", c.ti_s, 2);
+      ponerNumero(o, "te_s", c.te_s, 2);
+      ponerNumero(o, "pausa_s", c.pausa_s, 2);
+      ponerNumero(o, "ti_ttot", c.ti_ttot, 2);
+      ponerNumero(o, "pif_Lmin", c.pif_Lmin, 1);
+      ponerNumero(o, "pef_Lmin", c.pef_Lmin, 1);
+      ponerNumero(o, "vol_insp_L", c.vol_insp_L, 2);
+      ponerNumero(o, "vol_esp_L", c.vol_esp_L, 2);
+      ponerNumero(o, "pim_cmH2O", c.pim_cmH2O, 1);
+      ponerNumero(o, "pem_cmH2O", c.pem_cmH2O, 1);
+      ponerNumero(o, "t_pif_s", c.t_pif_s, 2);
+      ponerNumero(o, "t_pef_s", c.t_pef_s, 2);
+      ponerNumero(o, "t_pim_s", c.t_pim_s, 2);
+      ponerNumero(o, "t_pem_s", c.t_pem_s, 2);
+    }
+
+    JsonObject resumen = raiz["resumen"].to<JsonObject>();
+    JsonObject prom = resumen["promedios"].to<JsonObject>();
+    ponerNumero(prom, "ti_s", F.prom_ti_s, 2);
+    ponerNumero(prom, "te_s", F.prom_te_s, 2);
+    ponerNumero(prom, "pausa_s", F.prom_pausa_s, 2);
+    ponerNumero(prom, "ti_ttot", F.prom_ti_ttot, 2);
+    ponerNumero(prom, "pif_Lmin", F.prom_pif_Lmin, 1);
+    ponerNumero(prom, "pef_Lmin", F.prom_pef_Lmin, 1);
+    ponerNumero(prom, "vol_insp_L", F.prom_vol_insp_L, 2);
+    ponerNumero(prom, "vol_esp_L", F.prom_vol_esp_L, 2);
+    ponerNumero(prom, "pim_cmH2O", F.prom_pim_cmH2O, 1);
+    ponerNumero(prom, "pem_cmH2O", F.prom_pem_cmH2O, 1);
+
+    JsonObject multi = resumen["multiciclo"].to<JsonObject>();
+    multi["n_ciclos_completos"] = F.n_ciclos_completos;
+    multi["n_fases_sueltas"] = F.n_fases_sueltas;
+    ponerNumero(multi, "periodo_medio_s", F.periodo_medio_s, 2);
+    ponerNumero(multi, "frecuencia_rpm", F.frecuencia_rpm, 1);
+    ponerNumero(multi, "ventilacion_minuto_Lmin", F.ventilacion_minuto_Lmin, 1);
+    ponerNumero(multi, "pendiente_pim_por_ciclo", F.pendiente_pim_por_ciclo, 1);
+    ponerNumero(multi, "caida_pim_pct", F.caida_pim_pct, 1);
+    ponerNumero(multi, "pif_max_Lmin", F.pif_max_Lmin, 1);
+    ponerCiclo(multi, "pif_max_ciclo", F.pif_max_ciclo);
+    ponerNumero(multi, "pef_max_Lmin", F.pef_max_Lmin, 1);
+    ponerCiclo(multi, "pef_max_ciclo", F.pef_max_ciclo);
+    ponerNumero(multi, "pim_max_cmH2O", F.pim_max_cmH2O, 1);
+    ponerCiclo(multi, "pim_max_ciclo", F.pim_max_ciclo);
+    ponerNumero(multi, "pem_max_cmH2O", F.pem_max_cmH2O, 1);
+    ponerCiclo(multi, "pem_max_ciclo", F.pem_max_ciclo);
+  }
+
+  if (!escribirJsonSeguro(rutaEntrenamiento(id, ".json"), doc)) { SD.remove(csv); return false; }
+  return true;
+}
+
+bool TarjetaSD::descartarEntrenamiento(const String &id) {
+  cerrarEntrenamiento();
+  if (id.length() == 0 || !hayTarjeta()) return false;
+  bool ok = true;
+  for (const char *ext : {".csv.tmp", ".csv", ".json", ".json.tmp"}) {
+    String ruta = rutaEntrenamiento(id, ext);
+    if (SD.exists(ruta) && !SD.remove(ruta)) ok = false;
+  }
+  return ok;
+}
+
+// =============================================================================
 // HISTORIAL
 // =============================================================================
 

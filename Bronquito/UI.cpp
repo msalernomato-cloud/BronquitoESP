@@ -1280,6 +1280,33 @@ void BronquitoUI::setHintPim(const String &texto) {
   tft.setTextDatum(TL_DATUM);
 }
 
+void BronquitoUI::drawTrainingRunning() {
+  cancelArmado = false;
+  hasDot = false;
+  tft.fillScreen(COLOR_FONDO);
+
+  tft.fillRect(0, 0, 480, 40, BRONQUITO_CYAN);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
+  tft.setTextSize(2);
+  escribir("Entrenamiento en curso", 15, 20);
+
+  tft.fillRoundRect(30, 55, 420, 175, 10, COLOR_CAMPO_BG);
+  tft.drawRoundRect(30, 55, 420, 175, 10, BRONQUITO_CYAN);
+
+  // Pantalla fija durante la medición (no se actualiza: escribir frena el muestreo y mueve el cero de
+  // los sensores). Los ciclos se cuentan igual, pero no se muestran.
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_CAMPO_BG);
+  escribir("Inspirá fuerte y profundo,", 240, 90);
+  escribir("espirá todo y repetí.", 240, 120);
+  setHintPim("Espere... no respire");   // se cambia por "Ya puede empezar" recién terminada la tara
+
+  dibujarBoton(120, 245, 240, 50, "Detener", COLOR_ROJO_DEL);
+  tft.setTextDatum(TL_DATUM);
+}
+
 void BronquitoUI::setHintEsp(const String &texto) {
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(2);

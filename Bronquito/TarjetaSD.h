@@ -10,6 +10,7 @@
 #include "RespiratorySensors.h"
 #include "AnalisisEspiro.h"
 #include "AnalisisPIM.h"
+#include "AnalisisEntrenamiento.h"
 
 // =============================================================================
 // TARJETA microSD
@@ -22,7 +23,8 @@
 //   /CONFIGURACION.JSON          frecuencia de entrenamiento que indicó el médico
 //   /EVALUACIONES/<id>.json      resumen de cada medición (métricas, validación, ambiente)
 //   /EVALUACIONES/<id>.csv       señal completa de cada medición
-//   /ENTRENAMIENTOS/             (reservada para las sesiones de entrenamiento)
+//   /ENTRENAMIENTOS/<id>.csv     señal completa de cada sesión de entrenamiento
+//   /ENTRENAMIENTOS/<id>.json    estado de la sesión, features de cada ciclo y resumen
 //
 // Bus SPI propio, conector J8: CS 19, SCK 22, MISO 23, MOSI 21.
 // =============================================================================
@@ -161,6 +163,26 @@ public:
   void borrarTemporalesPIM();
 
   // =========================================================================
+  // ENTRENAMIENTOS (/ENTRENAMIENTOS/<id>.csv y <id>.json)
+  // -------------------------------------------------------------------------
+  // La sesión no entra en RAM: el .csv se escribe de a bloques mientras se mide, en un temporal
+  // <id>.csv.tmp. Al terminar, cargarSenalEntrenamiento() lo vuelve a leer para calcular las
+  // features, y guardarEntrenamiento() lo renombra y escribe el .json (con las features si las hay);
+  // descartarEntrenamiento() borra todo lo de esa sesión.
+  // =========================================================================
+  String nuevoIdEntrenamiento(const String &fechaHora);   // "ent_AAAAMMDD_HHMMSS" o "ent_SINHORA_n"
+  bool iniciarEntrenamiento(const String &id);            // crea el .csv.tmp con el encabezado
+  bool agregarMuestrasEntrenamiento(const MuestraEspiro *muestras, size_t cantidad);
+  bool cerrarEntrenamiento();                             // cierra el .csv.tmp (false si falló la escritura)
+  // Lee el .csv.tmp ya cerrado. false si no hay memoria para la señal y el análisis, o si falla la lectura.
+  bool cargarSenalEntrenamiento(const String &id, AnalisisEntrenamiento::SenalEntrenamiento &senal);
+  // estado: "completa" | "incompleta" | "interrumpida". fin: por qué terminó ("objetivo", "detenida",
+  // "sin_respiracion", "tiempo_maximo"). features == nullptr: no se pudieron calcular (van en null).
+  bool guardarEntrenamiento(const String &id, float duracion_s, float dcServo, const char *estado, const char *fin,
+                            int ciclosObjetivo, const AnalisisEntrenamiento::FeaturesEntrenamiento *features);
+  bool descartarEntrenamiento(const String &id);
+
+  // =========================================================================
   // HISTORIAL
   // =========================================================================
 
@@ -181,6 +203,9 @@ private:
   bool montada = false;
   PerfilPaciente perfil;
   EstadoTarjeta estadoActual = TARJETA_NO_ESTA;
+  fs::File archivoEntrenamiento;       // .csv.tmp de la sesión en curso
+  bool errorEntrenamiento = false; // falló alguna escritura de la sesión en curso
+  size_t muestrasEntrenamiento = 0; // muestras escritas en la sesión en curso (para reservar la memoria justa)
 
   bool montar();
   void olvidarPaciente(EstadoTarjeta motivo);

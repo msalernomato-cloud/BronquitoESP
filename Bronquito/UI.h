@@ -66,6 +66,10 @@ public:
   void drawCalibPimRunning(float tTotalSec);
   void updateCalibPimProgress(float presionCmH2O, float tiempoSec);
   void setHintPim(const String& texto);   // renglón de ayuda de la PIM (ej. "Espere..." -> "Inspire con fuerza")
+
+  // Entrenamiento: pantalla FIJA mientras se mide, como la PIM. El botón "Detener" está en el mismo
+  // lugar que "Cancelar", así que se lee con cancelarTocado(). El renglón de ayuda se cambia con setHintPim().
+  void drawTrainingRunning();
   // Sin delay: se puede llamar en pleno muestreo. true si tocaron "Cancelar" durante la captura
   bool cancelarTocado();
   // Pantalla de un paso (instrucciones o descanso). true = botón principal, false = Cancelar

@@ -52,7 +52,9 @@ void RespiratorySensors::leerADC() {
 }
 
 void RespiratorySensors::tomarMuestra() {
-  if (nMuestras >= capacidad) { muestreando = false; return; }
+  if (continua) {
+    if (nMuestras - nLeidas >= capacidad) { desbordada = true; muestreando = false; return; }
+  } else if (nMuestras >= capacidad) { muestreando = false; return; }
 
   MuestraEspiro m;
   if (congelado || saltarPendiente > 0) {
@@ -65,7 +67,7 @@ void RespiratorySensors::tomarMuestra() {
     m = procesarMuestra(vFlujo, vPIM);
     ultimaMuestra = m;
   }
-  bufferMuestras[nMuestras] = m;
+  bufferMuestras[continua ? nMuestras % capacidad : nMuestras] = m;
   nMuestras = nMuestras + 1;   // recién ahora el loop la puede leer
 }
 
@@ -256,6 +258,7 @@ String RespiratorySensors::obtenerLineaCSV(const MuestraEspiro& m) const {
 ResultadoCaptura RespiratorySensors::capturar(uint32_t duracionMs, size_t cadaN,
                                               std::function<void(const MuestraEspiro &)> mostrar,
                                               std::function<bool()> cancelar) {
+  continua = false;
   if (!iniciarMuestreo(duracionMs / 10 + 20)) return CAPTURA_SIN_MEMORIA;
 
   Serial.println("t_s,v_flujo_V,Q_Lmin,P_cmH2O");
@@ -295,4 +298,52 @@ ResultadoCaptura RespiratorySensors::capturar(uint32_t duracionMs, size_t cadaN,
 void RespiratorySensors::entregarMuestras(std::vector<MuestraEspiro> &destino) {
   std::vector<MuestraEspiro>().swap(destino);   // libera lo que tenía el destino
   destino.swap(bufferMuestras);                 // el destino se queda con las muestras, el sensor vacío
+}
+
+// ---- Captura continua (entrenamiento) ----
+// Pasa a 'destino' hasta 'max' muestras que el Ticker ya escribió y todavía no se guardaron
+size_t RespiratorySensors::sacarBloque(MuestraEspiro *destino, size_t max) {
+  size_t n = 0;
+  while (n < max && nLeidas < nMuestras) {
+    destino[n++] = bufferMuestras[nLeidas % capacidad];
+    nLeidas = nLeidas + 1;   // recién ahora el Ticker puede volver a usar esa posición
+  }
+  return n;
+}
+
+ResultadoCaptura RespiratorySensors::capturarContinua(std::function<bool(const MuestraEspiro *, size_t)> guardar,
+                                                      std::function<bool()> detener) {
+  continua = true;             // antes de iniciarMuestreo(): el Ticker arranca al final de esa función
+  desbordada = false;
+  nLeidas = 0;
+  if (!iniciarMuestreo(CAPACIDAD_CONTINUA)) { continua = false; return CAPTURA_SIN_MEMORIA; }
+
+  MuestraEspiro bloque[MUESTRAS_POR_BLOQUE];
+  ResultadoCaptura r = CAPTURA_OK;
+  uint32_t ultimoDetener = millis();
+  while (true) {
+    size_t n = sacarBloque(bloque, MUESTRAS_POR_BLOQUE);
+    if (n > 0 && guardar && !guardar(bloque, n)) { r = CAPTURA_ERROR_GUARDADO; break; }
+    if (desbordada) { r = CAPTURA_DESBORDADA; break; }
+    if (detener && millis() - ultimoDetener >= 100) {
+      ultimoDetener = millis();
+      if (detener()) break;
+    }
+    delay(1);
+  }
+
+  // No se usa detenerMuestreo(): su resize(nMuestras) no sirve para el buffer circular
+  muestreando = false;
+  InterrupcionSoftware.detach();
+  delay(3);                                            // por si estaba terminando una lectura
+
+  // Lo que quedó en el buffer también se guarda
+  if (r != CAPTURA_ERROR_GUARDADO) {
+    size_t n;
+    while ((n = sacarBloque(bloque, MUESTRAS_POR_BLOQUE)) > 0)
+      if (guardar && !guardar(bloque, n)) { r = CAPTURA_ERROR_GUARDADO; break; }
+  }
+  continua = false;
+  liberarMemoria();
+  return r;
 }

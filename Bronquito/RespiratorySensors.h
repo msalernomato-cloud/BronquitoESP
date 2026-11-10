@@ -37,7 +37,9 @@ struct Pasabajos10Hz {
 enum ResultadoCaptura {
   CAPTURA_OK,
   CAPTURA_CANCELADA,     // tocaron "Cancelar"
-  CAPTURA_SIN_MEMORIA    // no hay memoria contigua para el buffer
+  CAPTURA_SIN_MEMORIA,   // no hay memoria contigua para el buffer
+  CAPTURA_DESBORDADA,    // captura continua: no se alcanzó a guardar y se perdieron muestras
+  CAPTURA_ERROR_GUARDADO // captura continua: guardar() devolvió false (ej. falló la SD)
 };
 
 // Solo MIDE: lee el sensor, filtra, convierte a flujo o presión y guarda las muestras.
@@ -78,6 +80,14 @@ public:
                             std::function<void(const MuestraEspiro &)> mostrar,
                             std::function<bool()> cancelar);
 
+  // Igual que capturar(), pero SIN duración fija y sin juntar todo en RAM (para el entrenamiento):
+  // las muestras van a un buffer circular chico y, en el loop de la captura, se le pasan de a bloques
+  // a guardar(). Mide hasta que detener() devuelve true (se revisa cada 100 ms). La pantalla queda fija.
+  //   CAPTURA_OK: el usuario detuvo y se guardó todo
+  //   CAPTURA_DESBORDADA: guardar() tardó demasiado y se perdieron muestras (lo guardado sirve)
+  //   CAPTURA_ERROR_GUARDADO: guardar() devolvió false
+  ResultadoCaptura capturarContinua(std::function<bool(const MuestraEspiro *, size_t)> guardar,
+                                    std::function<bool()> detener);
   // Pasa las muestras de la última captura a 'destino' (el sensor se queda sin ellas)
   void entregarMuestras(std::vector<MuestraEspiro> &destino);
   // Libera la memoria del buffer (si quedó algo)
@@ -165,6 +175,15 @@ private:
   volatile size_t nMuestras = 0;
   size_t capacidad = 0;
   MuestraEspiro ultimaMuestra = {0, 0, 0, 0, 0, 0, 0};
+
+  // Captura continua: bufferMuestras se usa como buffer circular. nMuestras cuenta las muestras
+  // escritas (no vuelve a cero) y nLeidas las que ya se pasaron a guardar(); la posición es % capacidad.
+  static const size_t CAPACIDAD_CONTINUA = 512;   // ~5 s a 100 Hz de margen para la escritura en la SD
+  static const size_t MUESTRAS_POR_BLOQUE = 48;
+  volatile bool continua = false;
+  volatile bool desbordada = false;
+  volatile size_t nLeidas = 0;
+  size_t sacarBloque(MuestraEspiro *destino, size_t max);
 
   // Buffer de la captura en curso (lo escribe la tarea de muestreo)
   std::vector<MuestraEspiro> bufferMuestras;
