@@ -42,7 +42,7 @@
 // Se guardan en el .json ("codigo_error") y se muestran en pantalla como "E<n>".
 enum CodigoEspiro {
   ESPIRO_OK               = 0,
-  ESPIRO_E1_INICIO_TARDIO = 1,   // más de 3 s desde que el equipo estuvo listo hasta t0           (activo)
+  ESPIRO_E1_INICIO_TARDIO = 1,   // más de 5 s desde que el equipo estuvo listo hasta t0           (activo)
   ESPIRO_E2_BEV_ALTO      = 2,   // BEV mayor a 0,1 L o al 5 % del FVC (el mayor de los dos)         (activo)
   ESPIRO_E3_FIVC_MAYOR    = 3,   // FIVC mayor que FVC: necesita medir la inspiración                 (NO activo)
   ESPIRO_E4_CANCELADA     = 4,   // la canceló el usuario (no se guarda nada)                         (activo)
@@ -56,7 +56,7 @@ enum CodigoEspiro {
 inline const char *textoCodigoEspiro(int c) {
   switch (c) {
     case ESPIRO_OK:               return "Maniobra exitosa";
-    case ESPIRO_E1_INICIO_TARDIO: return "Tardó más de 3 s en comenzar";
+    case ESPIRO_E1_INICIO_TARDIO: return "Tardó más de 5 s en comenzar";
     case ESPIRO_E2_BEV_ALTO:      return "Inicio vacilante (BEV alto)";
     case ESPIRO_E3_FIVC_MAYOR:    return "Inspiración previa incompleta";
     case ESPIRO_E4_CANCELADA:     return "Maniobra cancelada";
@@ -125,7 +125,7 @@ namespace AnalisisEspiro {
                                           // menor al 30 % del pico más chico de los dos lados
   const int   TRAMO_MIN_MUESTRAS = 3;     // un tramo sobre el umbral más corto que esto (30 ms) es ruido
   const float VECINO_MAX_S       = 0.50f; // un tramo de flujo muy bajo hereda el sentido del vecino a menos de esto  // la inspiración tiene que empezar, como mucho, esto después del fin de la espiración
-  const float INICIO_MAX_S    = 3.0f;    // E1: desde que el equipo está listo (t = 0 de la captura) hasta t0
+  const float INICIO_MAX_S    = 5.0f;    // E1: desde que aparece "Exhale e inhale con fuerza" (t = 0 de la captura) hasta t0 extrapolado
   const float BEV_MIN_L       = 0.100f;  // E2: BEV <= max(BEV_MIN_L, BEV_FRACCION * FVC)  (ATS/ERS 2019)
   const float BEV_FRACCION    = 0.05f;
 }

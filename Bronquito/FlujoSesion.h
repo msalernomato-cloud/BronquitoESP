@@ -26,7 +26,9 @@ public:
 
   // ---- Inicio de sesión ----
   void mostrarResultadoTarjeta(EstadoTarjeta resultado);   // al arrancar: login + cartel si hubo error
-  void revisarSD();                    // en el login, cada 2 s: si cambió la tarjeta, redibuja
+  // En el login, cada 2 s: si cambió la tarjeta, redibuja.
+  // Si la sacaron avisa "MicroSD desconectada"; si la volvieron a poner, "MicroSD conectada".
+  void revisarSD();
   void refrescarPerfilEnUI();          // vuelve a leer perfil.json y actualiza el login (sin dibujar)
   void redibujarPantallaActual();      // login o menú principal, según el estado
 
@@ -50,6 +52,7 @@ private:
 
   unsigned long ultimoChequeoSD = 0;
   String ultimaClaveSD = "";
+  EstadoTarjeta ultimoEstadoSD = TARJETA_NO_ESTA;
 
   // 1 = PIN correcto, 0 = incorrecto, -1 = no se pudo verificar (sin conexión, sin paciente en la web...)
   int verificarPinEnLinea(const String &pin);

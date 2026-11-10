@@ -10,7 +10,7 @@
 #include "Reloj.h"
 #include "FlujoSesion.h"
 
-// La conexión con la web: Wi-Fi, elegir la computadora, el indicador de conexión y sincronizar.
+// La conexión con la web: Wi-Fi, elegir la computadora, el indicador de conexión, sincronizar y subir las pruebas.
 // Al sincronizar, los pedidos que tocan al paciente (cargar uno nuevo, borrar los datos, PIN nuevo)
 // se los pasa a FlujoSesion; acá solo se le responde a la web.
 class FlujoConexion {
@@ -30,7 +30,15 @@ public:
   void menuConectar();
   // Pantalla con el estado de la conexión
   void mostrarEstado();
-  // Borra la red y la compu guardadas
+  // Al terminar una evaluación: si hay pruebas sin subir (y Wi-Fi y compu), pregunta si mandarlas ya.
+  // Si acepta, sincroniza; si no, se suben en la próxima sincronización
+  void ofrecerEnvio();
+  // Botón "Enviar a la web" del historial: sincroniza ya (sube las pruebas y atiende los pedidos del médico)
+  void enviarDatos();
+  // Para liberar espacio en la microSD: si no hay Wi-Fi pide conectarse, si no hay compu (o no responde) pide
+  // el código, y sincroniza. true si sincronizó bien. Si la web pidió borrar el paciente, queda en el login
+  bool conectarYSincronizar();
+  // Borra todas las redes recordadas y la compu guardada
   void olvidarRedes();
 
 private:
@@ -53,7 +61,9 @@ private:
   bool identificarCompu(const String &ip, RespuestaIdentificar &r);
   void atenderSolicitud(JsonObject s);
   int procesarSolicitudes();
-  void sincronizar();
+  int subirPendientes();
+  bool sincronizar();   // true si se identificó con la compu y atendió los pedidos de la web
+  void terminarFlujoConexion();   // al salir de las pantallas de conexión: actualiza el estado y el indicador
   bool flujoCompu();
   void flujoWifi();
 };

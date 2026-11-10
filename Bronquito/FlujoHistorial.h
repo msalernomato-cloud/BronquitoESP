@@ -10,8 +10,9 @@ class FlujoHistorial {
 public:
   FlujoHistorial(BronquitoUI &ui, TarjetaSD &tarjeta);
 
-  // Menú del historial. Vuelve cuando el usuario elige "Volver al menú principal"
-  void ejecutar();
+  // Menú del historial. Vuelve cuando el usuario elige "Volver al menú" (false) o "Enviar a la web" (true):
+  // el envío lo hace FlujoConexion, desde el .ino
+  bool ejecutar();
 
 private:
   BronquitoUI &ui;

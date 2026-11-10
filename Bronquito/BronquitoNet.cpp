@@ -2,11 +2,83 @@
 #include <HTTPClient.h>
 #include "Secretos.h"
 
+// Nombre de la clave en la memoria para la red recordada i (ej. "rs0", "rp0")
+static String claveMemoria(const char *prefijo, int i) { return String(prefijo) + String(i); }
+
 void BronquitoNetwork::begin() {
   prefs.begin("bronquito", false);
   WiFi.persistent(false);          // la red la guardamos nosotros, no el sistema
   WiFi.mode(WIFI_STA);
+  // Equipos con la versión anterior: tenían una sola red guardada ("ssid"/"pass"). Pasa a la lista.
+  String ssid = prefs.getString("ssid", "");
+  if (prefs.getUChar("nRed", 0) == 0 && ssid.length() > 0) recordarRed(ssid, prefs.getString("pass", ""));
   reconectarGuardada();
+}
+
+void BronquitoNetwork::recordarRed(const String &ssid, const String &clave) {
+  // Queda primera (la más reciente). Si ya estaba, se mueve al principio con la contraseña nueva.
+  // Si no entra, se pierde la última de la lista (la que hace más tiempo que no se usa).
+  String nombres[MAX_REDES_RECORDADAS], claves[MAX_REDES_RECORDADAS];
+  int n = 0;
+  nombres[n] = ssid;
+  claves[n] = clave;
+  n++;
+  int antes = prefs.getUChar("nRed", 0);
+  for (int i = 0; i < antes && n < MAX_REDES_RECORDADAS; i++) {
+    String s = prefs.getString(claveMemoria("rs", i).c_str(), "");
+    if (s.length() == 0 || s == ssid) continue;
+    nombres[n] = s;
+    claves[n] = prefs.getString(claveMemoria("rp", i).c_str(), "");
+    n++;
+  }
+  for (int i = 0; i < n; i++) {
+    prefs.putString(claveMemoria("rs", i).c_str(), nombres[i]);
+    prefs.putString(claveMemoria("rp", i).c_str(), claves[i]);
+  }
+  for (int i = n; i < antes; i++) {
+    prefs.remove(claveMemoria("rs", i).c_str());
+    prefs.remove(claveMemoria("rp", i).c_str());
+  }
+  prefs.putUChar("nRed", n);
+  prefs.putString("ssid", ssid);   // a esta se reconecta al prender
+  prefs.putString("pass", clave);
+}
+
+bool BronquitoNetwork::claveRecordada(const String &ssid, String &clave) {
+  int n = prefs.getUChar("nRed", 0);
+  for (int i = 0; i < n; i++) {
+    if (prefs.getString(claveMemoria("rs", i).c_str(), "") == ssid) {
+      clave = prefs.getString(claveMemoria("rp", i).c_str(), "");
+      return true;
+    }
+  }
+  return false;
+}
+
+void BronquitoNetwork::olvidarRed(const String &ssid) {
+  // Se saca de la lista y las que estaban después se corren un lugar
+  int antes = prefs.getUChar("nRed", 0);
+  int n = 0;
+  for (int i = 0; i < antes; i++) {
+    String s = prefs.getString(claveMemoria("rs", i).c_str(), "");
+    if (s.length() == 0 || s == ssid) continue;
+    if (n != i) {
+      prefs.putString(claveMemoria("rs", n).c_str(), s);
+      prefs.putString(claveMemoria("rp", n).c_str(), prefs.getString(claveMemoria("rp", i).c_str(), ""));
+    }
+    n++;
+  }
+  for (int i = n; i < antes; i++) {
+    prefs.remove(claveMemoria("rs", i).c_str());
+    prefs.remove(claveMemoria("rp", i).c_str());
+  }
+  prefs.putUChar("nRed", n);
+  // Si era a la que se reconecta al prender, también: así no sigue probando con la contraseña vieja
+  if (prefs.getString("ssid", "") == ssid) {
+    prefs.remove("ssid");
+    prefs.remove("pass");
+  }
+  Serial.println("[NET] Contraseña olvidada: " + ssid);
 }
 
 // Empieza a conectarse a la red guardada. Si no está cerca, el core lo reintenta solo
@@ -103,8 +175,7 @@ ResultadoWifi BronquitoNetwork::conectar(const String &ssid, const String &clave
     return RES_WIFI_INCOMPATIBLE;
   }
 
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", clave);
+  recordarRed(ssid, clave);
   Serial.println("[NET] Conectado. IP: " + WiFi.localIP().toString());
   return RES_WIFI_OK;
 }
@@ -164,13 +235,13 @@ bool BronquitoNetwork::pedirMensaje(String& mensaje, bool& compuViva) {
 // ---------------------------------------------------------------------------
 // El cuerpo no se imprime en el monitor serie (puede llevar el PIN).
 int BronquitoNetwork::llamarApi(const String& ip, const char* metodo, const String& ruta,
-                                const String& cuerpo, JsonDocument& resp) {
+                                const String& cuerpo, JsonDocument& resp, uint16_t timeoutMs) {
   resp.clear();
   if (!estaConectado() || ip.length() == 0) return SIN_RED;
 
   HTTPClient http;
   http.setConnectTimeout(3000);
-  http.setTimeout(5000);
+  http.setTimeout(timeoutMs);
   if (!http.begin("http://" + ip + ":" + String(PUERTO_SERVIDOR) + ruta)) return SIN_RED;
   http.addHeader("X-Device-Key", CLAVE_DISPOSITIVO);
   if (cuerpo.length() > 0) http.addHeader("Content-Type", "application/json");
@@ -220,11 +291,16 @@ String BronquitoNetwork::textoError(int http) {
 }
 
 void BronquitoNetwork::olvidarRedes() {
+  for (int i = 0; i < MAX_REDES_RECORDADAS; i++) {
+    prefs.remove(claveMemoria("rs", i).c_str());
+    prefs.remove(claveMemoria("rp", i).c_str());
+  }
+  prefs.remove("nRed");
   prefs.remove("ssid");
   prefs.remove("pass");
   prefs.remove("ip");
   WiFi.disconnect();
-  Serial.println("[NET] Red y compu olvidadas");
+  Serial.println("[NET] Redes y compu olvidadas");
 }
 
 // Valida el PIN contra la web. El PIN va en el cuerpo del pedido y no se imprime en el monitor serie.
@@ -277,4 +353,12 @@ void BronquitoNetwork::confirmarFrecuencia(JsonVariantConst idFrecuencia) {
   serializeJson(cuerpo, enviar);
   JsonDocument confirmacion;
   llamarApi(servidorGuardado(), "POST", "/dispositivo/frecuencia/confirmar", enviar, confirmacion);
+}
+
+// ---------------------------------------------------------------------------
+// PRUEBAS DE LA SD
+// ---------------------------------------------------------------------------
+// Una espirometría son ~25 KB: se le da más tiempo que al resto de los pedidos.
+int BronquitoNetwork::subirEvaluacion(const String& cuerpo, JsonDocument& resp) {
+  return llamarApi(servidorGuardado(), "POST", "/dispositivo/evaluaciones", cuerpo, resp, 10000);
 }

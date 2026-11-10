@@ -13,6 +13,7 @@
 #include "FlujoHistorial.h"
 #include "ValvulaActiva.h"
 #include "FlujoEntrenamiento.h"
+#include "EspacioSD.h"
 
 // ---------------------------------------------------------------------------
 // HARDWARE
@@ -41,6 +42,7 @@ FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
 FlujoHistorial   historial(ui, tarjeta);
 FlujoConfiguracion configuracion(ui, tarjeta, net);
 FlujoEntrenamiento entrenamiento(ui, sensoresResp, valvula, tarjeta, reloj);
+EspacioSD        espacioSD(ui, tarjeta, conexion, estadoActual);
 
 void leerComandosSerie() {
   if (!Serial.available()) return;
@@ -52,6 +54,7 @@ void leerComandosSerie() {
   else if (c == "HORA")        reloj.imprimirEstado();
   else if (c == "I2C")         reloj.escanearBus();
   else if (c == "OLVIDAR_RED") conexion.olvidarRedes();
+  else if (c == "SD")          espacioSD.informarPorSerie();
 }
 
 void setup() {
@@ -162,13 +165,32 @@ void loop() {
 
     case EVENTO_HISTORIAL:
       Serial.println("[FSM] Opción seleccionada: HISTORIAL");
-      historial.ejecutar();
+      // true = tocó "Enviar a la web": sincroniza y vuelve al historial
+      while (historial.ejecutar()) {
+        conexion.enviarDatos();
+        if (estadoActual == ESTADO_INICIO_SESION) break;   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+      }
       sesion.redibujarPantallaActual();
       break;
 
     case EVENTO_CALIBRAR:
       Serial.println("[FSM] Calibración guiada: PIM + Espirometría");
+      // Si queda poco espacio en la microSD, borra pruebas viejas (ya enviadas a la web) antes de medir
+      if (!espacioSD.asegurarEspacio()) {
+        if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+          sesion.redibujarPantallaActual();
+          break;
+        }
+        estadoActual = ESTADO_MENU_CALIBRACION;
+        ui.drawCalibMenu();
+        break;
+      }
       calibracion.ejecutar();
+      conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se suben en la próxima
+      if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+        sesion.redibujarPantallaActual();
+        break;
+      }
       estadoActual = ESTADO_MENU_CALIBRACION;
       ui.drawCalibMenu();
       break;
