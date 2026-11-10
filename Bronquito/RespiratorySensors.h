@@ -105,10 +105,12 @@ private:
   const float SENS_MPX_V_PA    = 1.25e-6f;                            // 1,25 mV/kPa alimentado a 5 V
   const float K_PA_A_LMIN      = 3.7848f;
   const float K_TEORICA        = K_PA_A_LMIN / sqrtf(GANANCIA_FLUJO * SENS_MPX_V_PA);   // ≈ 346,2 L/min/sqrt(V)
-  // El venturi no es simétrico: cada sentido tiene su constante. Por ahora las dos son la teórica;
-  // cuando se calibre con la jeringa de 3 L, poner acá los valores medidos.
+  // El venturi no es simétrico: cada sentido tiene su constante. La espiración usa la teórica.
+  // La inspiración se calibró el 08/11/2026 con 3 personas x 4 maniobras (evals 48-59): K de cierre
+  // = FVC / FIVC medida, mediana de 11 maniobras válidas = 1,67 (CV 12 %). Ver el protocolo en Docs.
+  const float K_CIERRE_INSP    = 1.67f;
   const float K_ESPIRACION     = K_TEORICA;
-  const float K_INSPIRACION    = K_TEORICA;
+  const float K_INSPIRACION    = K_CIERRE_INSP * K_TEORICA;   // ≈ 578 L/min/sqrt(V)
 
   // Canal de presión (GPIO39): PSA071040 -> INA128 (U3), salida SIN amplificar (MAN2, conector J7)
   //   INA128: G = 1 + 50k / RG,  RG = R8 = 3,9k -> 13,82
