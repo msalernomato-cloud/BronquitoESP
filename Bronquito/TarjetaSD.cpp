@@ -151,6 +151,28 @@ FrecuenciaGuardada TarjetaSD::leerFrecuencia() {
   return fr;
 }
 
+// Formato (por ahora se escribe a mano; guardarFrecuencia lo respeta porque pisa solo "frecuencia"):
+//   "resistencia": { "nivel": 3, "vigencia_dias": 14, "vence": "2026-11-22", "fijado_por": "medico" }
+ResistenciaGuardada TarjetaSD::leerResistencia() {
+  ResistenciaGuardada r;
+  if (!hayTarjeta()) return r;
+  JsonDocument doc;
+  if (!leerJson(ARCHIVO_CONFIG, doc)) return r;
+
+  JsonObjectConst res = doc["resistencia"];
+  if (res.isNull()) return r;
+  int nivel = res["nivel"] | 0;
+  if (nivel < 1 || nivel > 5) {
+    Serial.println("[CONFIG] \"resistencia\" tiene un nivel fuera de 1-5: se ignora");
+    return r;
+  }
+  r.nivel = nivel;
+  r.vigenciaDias = res["vigencia_dias"] | 0;
+  r.vence = String(res["vence"] | "");
+  r.fijadoPorMedico = String(res["fijado_por"] | "algoritmo") == "medico";
+  return r;
+}
+
 // =============================================================================
 // MEDICIONES
 // =============================================================================

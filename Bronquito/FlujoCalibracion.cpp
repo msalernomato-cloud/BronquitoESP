@@ -58,8 +58,7 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
 
   if (r == CAPTURA_SIN_MEMORIA) {
     Serial.println("[CAL] No se pudo iniciar el muestreo (memoria: ver líneas [MEM])");
-    ui.mostrarMensaje("No se pudo medir", "Falta memoria (ver serie)", COLOR_ROJO_DEL);
-    delay(2000);
+    ui.mostrarError("No se pudo medir", "Falta memoria (ver serie)");
     return r;
   }
   if (r == CAPTURA_CANCELADA) return r;
@@ -114,10 +113,10 @@ void FlujoCalibracion::ejecutar() {
   int espFallidas = 0;
 
   const String lPim[4] = {
-    "1. Boquilla puesta, salida tapada.",
+    "1. Colocá la tapa.",
     "2. Exhalá todo el aire.",
-    "3. Inhalá con máxima fuerza",
-    "   durante al menos 1,5 segundos."
+    "3. Inhalá con máxima fuerza por la",
+    "   boquilla durante al menos 1,5 s."
   };
   const String lDescanso[3] = {
     "Descansá unos segundos y",
@@ -142,10 +141,14 @@ void FlujoCalibracion::ejecutar() {
     tarjeta.borrarTemporalesPIM();
 
     bool listo = false;
+    int repeticiones = 0;   // con un solo intento: cuántas veces el paciente eligió repetirlo
     while (rp.nIntentos < INTENTOS_MAX && !listo) {
       int k = rp.nIntentos;
-      String titulo = "PIM: intento " + String(k + 1) + " de " + String(INTENTOS_MAX);
-      if (!ui.mostrarPasoCalibracion(titulo, k == 0 ? "Instrucciones:" : "Descansá y repetí:", lPim, 4, "COMENZAR", COLOR_VERDE_OK)) {
+      String titulo = INTENTOS_MAX > 1 ? "PIM: intento " + String(k + 1) + " de " + String(INTENTOS_MAX)
+                    : repeticiones > 0 ? "PIM: repetición " + String(repeticiones)
+                    : "Paso 1 de 2: PIM";
+      bool primera = (k == 0 && repeticiones == 0);
+      if (!ui.mostrarPasoCalibracion(titulo, primera ? "Instrucciones:" : "Descansá y repetí:", lPim, 4, "COMENZAR", COLOR_VERDE_OK)) {
         calibracionCancelada(calibId);
         return;
       }
@@ -170,7 +173,29 @@ void FlujoCalibracion::ejecutar() {
       Serial.printf("[PIM] Intento %d: E%d (%s) | PIM sostenida %.1f cmH2O | pico %.1f | esfuerzo %.2f s | cero corregido %+.1f | parecidos %d de %d\n",
                     k + 1, it.codigo, textoCodigoPIM(it.codigo), it.pim_cmH2O, it.pico_cmH2O, it.duracionEsfuerzo_s,
                     it.offset_cmH2O, parecidos, INTENTOS_REPRO);
-      if (INTENTOS_MAX > 1) {   // con varios intentos se muestra cómo va cada uno
+      if (INTENTOS_MAX == 1) {
+        // Un solo intento (sin exigir reproducibilidad): el paciente ve el resultado y decide si lo repite.
+        // Si lo repite, el intento anterior se descarta (su .csv temporal se pisa con el nuevo).
+        bool repetir;
+        if (it.valido) {
+          int r = ui.revisarManiobra(titulo, "PIM " + String(it.pim_cmH2O, 1) + " cmH2O",
+                                     "Pico " + String(it.pico_cmH2O, 1) + " cmH2O | " + String(it.duracionEsfuerzo_s, 1) + " s");
+          if (r < 0) { calibracionCancelada(calibId); return; }
+          repetir = (r == 0);
+        } else {
+          repetir = ui.pedirConfirmacion("PIM inválida (E" + String(it.codigo) + ")", textoCodigoPIM(it.codigo),
+                                         "Podés repetirla o seguir así", "Seguir", "Repetir",
+                                         COLOR_TEXTO_GRIS, BRONQUITO_CYAN);
+        }
+        if (repetir) {
+          Serial.println("[PIM] El paciente repite la maniobra (se descarta el intento anterior)");
+          rp.nIntentos = 0;
+          repeticiones++;
+          listo = false;
+          continue;
+        }
+        listo = true;
+      } else {   // con varios intentos se muestra cómo va cada uno
         if (it.valido)
           ui.mostrarMensaje("Intento " + String(k + 1) + ": " + String(it.pim_cmH2O, 1) + " cmH2O",
                             "Parecidos: " + String(parecidos) + " de " + String(INTENTOS_REPRO), COLOR_VERDE_OK);
@@ -206,8 +231,8 @@ void FlujoCalibracion::ejecutar() {
                                                   : "No reproducible (E" + String(rp.codigo) + ")",
                           rp.codigo == PIM_OK ? COLOR_VERDE_OK : COLOR_ROJO_DEL);
       else
-        ui.showErrorMessage("Error en SD", "No se pudo guardar la PIM");
-      delay(2000);
+        ui.showErrorMessage("Error en SD", "No se pudo guardar la PIM");   // espera el OK
+      if (pimGuardada) delay(2000);
     }
 
     bool sigue = ui.mostrarPasoCalibracion("Descanso", "Muy bien. PIM lista.", lDescanso, 3, "CONTINUAR", BRONQUITO_CYAN);
@@ -261,7 +286,6 @@ void FlujoCalibracion::ejecutar() {
     tarjeta.borrarEspirometria(calibId);
     Serial.println("[SD] Error al guardar la calibración");
     ui.showErrorMessage("Error en SD", "No se pudo guardar la prueba");
-    delay(2000);
     return;
   }
 

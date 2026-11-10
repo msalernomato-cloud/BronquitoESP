@@ -21,7 +21,7 @@ TarjetaSD tarjeta(19, 22, 23, 21);     // microSD: CS, SCK, MISO, MOSI
 BronquitoNetwork net;
 RespiratorySensors sensoresResp(36, 39);
 
-const int DHT_PIN = 2;                 // DHT22 (temperatura y humedad para la corrección BTPS)
+const int DHT_PIN = 27;                // DHT22 (temperatura y humedad para la corrección BTPS). En la placa: pin 1 del conector del DFPlayer (J2). En el GPIO2 no leía por el LED de la ESP32
 BTPSSensor btps(DHT_PIN, DHT22);
 
 const int RTC_PIN_SDA = 17;
@@ -37,7 +37,7 @@ FlujoSesion      sesion(ui, tarjeta, net, estadoActual);
 FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
 FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
 FlujoHistorial   historial(ui, tarjeta);
-FlujoConfiguracion configuracion(ui, tarjeta, net);
+FlujoConfiguracion configuracion(ui, tarjeta, net, reloj);
 EspacioSD        espacioSD(ui, tarjeta, conexion, estadoActual);
 
 void leerComandosSerie() {

@@ -351,21 +351,34 @@ void BronquitoUI::showPinStatus(bool correct) {
   tft.setTextDatum(TL_DATUM);
 }
 
+static bool dentro(int px, int py, int x, int y, int w, int h);   // definida más abajo
+
 void BronquitoUI::showErrorMessage(String title, String message) {
-  tft.fillRoundRect(60, 80, 360, 160, 10, COLOR_FONDO);
-  tft.drawRoundRect(60, 80, 360, 160, 10, COLOR_ROJO_DEL);
-  tft.drawRoundRect(61, 81, 358, 158, 9, COLOR_ROJO_DEL);
+  mostrarError(title, message);
+}
 
-  tft.setTextDatum(TC_DATUM);
+void BronquitoUI::mostrarError(const String &titulo, const String &detalle) {
+  hasDot = false;
+  tft.fillRoundRect(15, 65, 450, 190, 10, COLOR_FONDO);
+  tft.drawRoundRect(15, 65, 450, 190, 10, COLOR_ROJO_DEL);
+  tft.drawRoundRect(16, 66, 448, 188, 9, COLOR_ROJO_DEL);
+
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
   tft.setTextColor(COLOR_ROJO_DEL, COLOR_FONDO);
-  tft.setTextSize(2);
-  escribir(title, 240, 100);
-
-  tft.setTextColor(BRONQUITO_CYAN, COLOR_FONDO);
-  tft.setTextSize(2);
-  escribir(message, 240, 145);
-
+  escribir(titulo, 240, 98);
+  if (detalle.length() > 0) {
+    tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
+    escribir(detalle, 240, 140);
+  }
+  dibujarBoton(170, 190, 140, 48, "OK", BRONQUITO_CYAN);
   tft.setTextDatum(TL_DATUM);
+
+  while (true) {
+    int x, y;
+    if (!leerToque(x, y)) continue;
+    if (dentro(x, y, 170, 190, 140, 48)) return;
+  }
 }
 
 EventoPantalla BronquitoUI::detectarEvento(EstadoSistema estadoActual) {
@@ -785,7 +798,14 @@ String BronquitoUI::pedirPin(const String &titulo, const String &subtitulo) {
   }
 }
 
-void BronquitoUI::mostrarFrecuencia(int sesiones, const bool *dias, const String &vigenteDesde, bool recienActualizada) {
+// "AAAA-MM-DD" -> "DD/MM/AAAA" (si no tiene ese formato, queda como está)
+static String fechaLegible(const String &f) {
+  if (f.length() != 10) return f;
+  return f.substring(8, 10) + "/" + f.substring(5, 7) + "/" + f.substring(0, 4);
+}
+
+void BronquitoUI::mostrarConfiguracion(int sesiones, const bool *dias, const String &vigenteDesde,
+                                       bool recienActualizada, const InfoResistencia &res) {
   hasDot = false;
   tft.fillScreen(COLOR_FONDO);
 
@@ -795,52 +815,93 @@ void BronquitoUI::mostrarFrecuencia(int sesiones, const bool *dias, const String
   tft.setTextSize(2);
   escribir("Configuración", 15, 23);
 
+  // ---- Frecuencia (y 55 a 140) ----
   tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
   if (sesiones <= 0) {
     tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
-    escribir("Todavía no hay frecuencia", 240, 125);
+    escribir("Todavía no hay frecuencia", 240, 80);
     tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
-    escribir("Pedile a tu médico que la cargue", 240, 165);
+    escribir("Pedile a tu médico que la cargue", 240, 112);
   } else {
-    tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
-    escribir("Frecuencia recomendada", 240, 70);
     tft.setTextColor(BRONQUITO_CYAN, COLOR_FONDO);
-    tft.setTextSize(3);
-    escribir(String(sesiones) + (sesiones == 1 ? " vez" : " veces") + " por semana", 240, 108);
+    escribir("Frecuencia: " + String(sesiones) + (sesiones == 1 ? " vez" : " veces") + " por semana", 240, 64);
 
     static const char *DIAS[7] = {"Lu", "Ma", "Mi", "Ju", "Vi", "Sa", "Do"};
-    tft.setTextSize(2);
     for (int i = 0; i < 7; i++) {
       int x = 35 + i * 60;
       uint16_t fondo = dias[i] ? BRONQUITO_CYAN : COLOR_CAMPO_BG;
-      tft.fillRoundRect(x, 138, 50, 50, 8, fondo);
+      tft.fillRoundRect(x, 80, 50, 36, 8, fondo);
       tft.setTextColor(dias[i] ? COLOR_FONDO : COLOR_TEXTO_GRIS, fondo);
-      escribir(DIAS[i], x + 25, 163);
+      escribir(DIAS[i], x + 25, 98);
     }
-
-    String fecha = vigenteDesde;
-    if (fecha.length() == 10)
-      fecha = fecha.substring(8, 10) + "/" + fecha.substring(5, 7) + "/" + fecha.substring(0, 4);
     tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
-    escribir("Desde el " + fecha, 240, 213);
-
-    tft.setTextSize(1);
-    if (recienActualizada) {
-      tft.setTextColor(COLOR_VERDE_OK, COLOR_FONDO);
-      escribir("Actualizada desde la web", 240, 238);
-    } else {
-      tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
-      escribir("Guardada en la tarjeta SD", 240, 238);
-    }
+    escribir("Desde el " + fechaLegible(vigenteDesde), 240, 132);
   }
 
-  dibujarBoton(90, 258, 300, 46, "Volver", COLOR_TEXTO_GRIS);
+  tft.drawFastHLine(30, 148, 420, COLOR_CAMPO_BG);
+
+  // ---- Resistencia (y 150 a 250) ----
+  if (res.nivel <= 0) {
+    tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
+    escribir("Todavía no hay nivel de resistencia", 240, 180);
+    tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
+    escribir("Se asigna con la evaluación", 240, 212);
+  } else {
+    tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
+    escribir("Resistencia: nivel " + String(res.nivel) + " de " + String(NIVELES_RESISTENCIA), 240, 166);
+
+    // Barra de niveles: los llenos hasta el nivel actual
+    const int ancho = 40, sep = 8;
+    int x0 = 240 - (NIVELES_RESISTENCIA * ancho + (NIVELES_RESISTENCIA - 1) * sep) / 2;
+    for (int i = 0; i < NIVELES_RESISTENCIA; i++) {
+      uint16_t c = (i < res.nivel) ? BRONQUITO_CYAN : COLOR_CAMPO_BG;
+      tft.fillRoundRect(x0 + i * (ancho + sep), 182, ancho, 18, 5, c);
+    }
+
+    // Vencimiento
+    String linea;
+    uint16_t color = COLOR_TEXTO_GRIS;
+    if (res.vence.length() != 10) {
+      linea = "Sin fecha de vencimiento";
+      color = BRONQUITO_ORANGE;
+    } else if (!res.hayFechaHoy) {
+      linea = "Vence el " + fechaLegible(res.vence);
+    } else if (res.diasRestantes < 0) {
+      linea = "Venció el " + res.vence.substring(8, 10) + "/" + res.vence.substring(5, 7) + ": hacé la evaluación";
+      color = COLOR_ROJO_DEL;
+    } else if (res.diasRestantes == 0) {
+      linea = "Vence hoy";
+      color = BRONQUITO_ORANGE;
+    } else {
+      linea = "Vence el " + fechaLegible(res.vence) + " (faltan " + String(res.diasRestantes) +
+              (res.diasRestantes == 1 ? " día)" : " días)");
+      if (res.diasRestantes <= 2) color = BRONQUITO_ORANGE;
+    }
+    tft.setTextColor(color, COLOR_FONDO);
+    escribir(linea, 240, 218);
+
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
+    String origen = res.fijadoPorMedico ? "Fijado por el médico" : "Calculado por el equipo";
+    if (res.vigenciaDias > 0) origen += " - vigencia de " + String(res.vigenciaDias) + " días";
+    escribir(origen, 240, 238);
+  }
+
+  // ---- Aviso si la frecuencia se acaba de bajar de la web ----
+  tft.setTextSize(1);
+  if (sesiones > 0 && recienActualizada) {
+    tft.setTextColor(COLOR_VERDE_OK, COLOR_FONDO);
+    escribir("Frecuencia actualizada desde la web", 240, 252);
+  }
+
+  dibujarBoton(90, 266, 300, 44, "Volver", COLOR_TEXTO_GRIS);
   tft.setTextDatum(TL_DATUM);
 
   while (true) {
     int x, y;
     if (!leerToque(x, y)) continue;
-    if (dentro(x, y, 90, 258, 300, 46)) return;
+    if (dentro(x, y, 90, 266, 300, 44)) return;
   }
 }
 

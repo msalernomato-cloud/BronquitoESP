@@ -24,8 +24,7 @@ void FlujoSesion::mostrarResultadoTarjeta(EstadoTarjeta resultado) {
   }
   if (titulo) {
     Serial.println(String("[SESION] ") + titulo + " " + detalle);
-    ui.showErrorMessage(titulo, detalle);
-    delay(1800);
+    ui.showErrorMessage(titulo, detalle);   // espera el OK
     ui.drawLoginScreen();
   }
 }
@@ -58,8 +57,7 @@ void FlujoSesion::revisarSD() {
     ui.setSynced(tarjeta.hayPaciente());
     if (sacada) {
       Serial.println("[SESION] MicroSD desconectada");
-      ui.mostrarMensaje("MicroSD desconectada", "Volvé a colocar la tarjeta", COLOR_ROJO_DEL);
-      delay(1800);
+      ui.mostrarError("MicroSD desconectada", "Volvé a colocar la tarjeta");
     } else if (puesta) {
       Serial.println("[SESION] MicroSD conectada");
       ui.mostrarMensaje("MicroSD conectada", "", COLOR_VERDE_OK);
@@ -83,7 +81,6 @@ bool FlujoSesion::ingresar() {
     ui.showErrorMessage("¡Acceso bloqueado!", "Colocá la microSD");
   else
     ui.showErrorMessage("¡Acceso bloqueado!", "Sincronizá con la web");
-  delay(1800);
   ui.drawLoginScreen();
   return false;
 }
@@ -116,9 +113,7 @@ String FlujoSesion::cargarPaciente(JsonObjectConst perfil) {
 
   if (!tarjeta.guardarPerfil(perfil)) {
     bool hayTarjeta = tarjeta.hayTarjeta();
-    ui.mostrarMensaje("No se pudo cargar", hayTarjeta ? "Error al escribir la SD" : "No se detectó la tarjeta SD",
-                      COLOR_ROJO_DEL);
-    delay(2200);
+    ui.mostrarError("No se pudo cargar", hayTarjeta ? "Error al escribir la SD" : "No se detectó la tarjeta SD");
     return hayTarjeta ? "error_sd" : "sin_tarjeta_sd";
   }
   refrescarPerfilEnUI();
@@ -142,12 +137,12 @@ ResultadoFormato FlujoSesion::borrarDatos(bool forzar) {
   ResultadoFormato r = tarjeta.borrarTodo(forzar);
 
   switch (r) {
-    case FORMATO_OK:             ui.mostrarMensaje("Listo para un nuevo paciente", "Se borraron los datos", COLOR_VERDE_OK); break;
-    case FORMATO_HAY_PENDIENTES: ui.mostrarMensaje("No se pudo preparar", "Hay pruebas sin subir", COLOR_ROJO_DEL);       break;
-    case FORMATO_SIN_TARJETA:    ui.mostrarMensaje("No se pudo preparar", "No hay tarjeta SD", COLOR_ROJO_DEL);           break;
-    default:                     ui.mostrarMensaje("Preparación incompleta", "Revisá la tarjeta SD", COLOR_ROJO_DEL);      break;
+    case FORMATO_OK:             ui.mostrarMensaje("Listo para un nuevo paciente", "Se borraron los datos", COLOR_VERDE_OK);
+                                 delay(2000);                                                              break;
+    case FORMATO_HAY_PENDIENTES: ui.mostrarError("No se pudo preparar", "Hay pruebas sin subir");         break;
+    case FORMATO_SIN_TARJETA:    ui.mostrarError("No se pudo preparar", "No hay tarjeta SD");             break;
+    default:                     ui.mostrarError("Preparación incompleta", "Revisá la tarjeta SD");       break;
   }
-  delay(2000);
 
   if (r == FORMATO_OK || r == FORMATO_ERROR) {   // ya no hay paciente: siempre vuelve al inicio de sesión
     estado = ESTADO_INICIO_SESION;
@@ -183,14 +178,12 @@ int FlujoSesion::verificarPinEnLinea(const String &pin) {
     return 1;
   }
   if (r.http == 401) {
-    ui.mostrarMensaje("PIN incorrecto", "", COLOR_ROJO_DEL);
-    delay(1500);
+    ui.mostrarError("PIN incorrecto", "");
     return 0;
   }
   String motivo = net.textoError(r.http);
   if (r.error == "sin_paciente_asignado")    motivo = "No hay un paciente asignado";
   else if (r.error == "usuario_no_asignado") motivo = "Este usuario no está asignado";
-  ui.mostrarMensaje("No se pudo verificar", motivo, COLOR_ROJO_DEL);
-  delay(2200);
+  ui.mostrarError("No se pudo verificar", motivo);
   return -1;
 }

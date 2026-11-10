@@ -19,7 +19,7 @@
 //
 // Qué hay en la tarjeta:
 //   /perfil.json                 datos del paciente (incluye el PIN)
-//   /CONFIGURACION.JSON          frecuencia de entrenamiento que indicó el médico
+//   /CONFIGURACION.JSON          frecuencia de entrenamiento que indicó el médico y nivel de resistencia
 //   /EVALUACIONES/<id>.json      resumen de cada medición (métricas, validación, ambiente)
 //   /EVALUACIONES/<id>.csv       señal completa de cada medición
 //   /ENTRENAMIENTOS/             (reservada para las sesiones de entrenamiento)
@@ -65,6 +65,16 @@ struct FrecuenciaGuardada {
   int sesiones = 0;        // 0 = no hay ninguna guardada
   bool dias[7] = {};       // 0 = lunes ... 6 = domingo
   String vigenteDesde;     // "AAAA-MM-DD"
+};
+
+// ---- Nivel de resistencia del entrenamiento (/CONFIGURACION.JSON) ---------
+// Por ahora se carga a mano en la tarjeta. Más adelante lo va a escribir el algoritmo de la web
+// a partir de la evaluación (espirometría + PIM), o el médico si lo fija él.
+struct ResistenciaGuardada {
+  int nivel = 0;                 // 1 (válvula más abierta) a 5 (más cerrada); 0 = no hay ninguno guardado
+  int vigenciaDias = 0;          // cada cuántos días vence la evaluación
+  String vence;                  // "AAAA-MM-DD"
+  bool fijadoPorMedico = false;  // true = "fijado_por": "medico"; false = "algoritmo"
 };
 
 // ---- Temperatura y humedad al medir (DHT22) y factor BTPS aplicado ---------
@@ -136,6 +146,7 @@ public:
   // =========================================================================
   bool guardarFrecuencia(JsonVariantConst frecuencia);   // pisa solo esa clave del archivo
   FrecuenciaGuardada leerFrecuencia();
+  ResistenciaGuardada leerResistencia();   // "resistencia" de /CONFIGURACION.JSON (nivel 0 si no hay)
 
   // =========================================================================
   // MEDICIONES (se guardan al terminar cada maniobra)

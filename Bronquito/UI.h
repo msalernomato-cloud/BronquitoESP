@@ -46,6 +46,17 @@ inline MetricaItem metrica(const char *etiqueta, const String &valor, const char
   return m;
 }
 
+// Lo que muestra la pantalla de Configuración sobre el nivel de resistencia
+struct InfoResistencia {
+  int nivel = 0;                 // 1 a NIVELES_RESISTENCIA; 0 = todavía no hay
+  int vigenciaDias = 0;
+  String vence;                  // "AAAA-MM-DD"
+  bool fijadoPorMedico = false;
+  bool hayFechaHoy = false;      // false = el reloj no tiene hora: no se puede saber si venció
+  int diasRestantes = 0;         // hasta "vence" (negativo = ya venció); vale solo si hayFechaHoy
+};
+const int NIVELES_RESISTENCIA = 5;
+
 class BronquitoUI {
 public:
   BronquitoUI();
@@ -77,7 +88,9 @@ public:
   void showSyncFeedback();
   void showLoginFeedback();
   void showPinStatus(bool correct);
+  // Cartel de error sobre la pantalla actual, con botón OK: espera a que lo toquen para volver
   void showErrorMessage(String title, String message);
+  void mostrarError(const String &titulo, const String &detalle = "");   // lo mismo (nombre en castellano)
   void setSynced(bool synced) { isSynced = synced; }
   void setUsuario(const String &texto) { textoUsuario = texto; }   // lo que se ve en el login
   void setEstadoConexion(EstadoConexion e) { estadoCon = e; }
@@ -94,7 +107,9 @@ public:
                          uint16_t colorNo = COLOR_ROJO_DEL, uint16_t colorSi = COLOR_VERDE_OK);
   String pedirPin(const String& titulo, const String& subtitulo = "");
   void mostrarEstadoConexion(const String& ssid, const String& ipCompu);
-  void mostrarFrecuencia(int sesiones, const bool *dias, const String& vigenteDesde, bool recienActualizada);
+  // Pantalla de Configuración: frecuencia de entrenamiento (arriba) y nivel de resistencia (abajo)
+  void mostrarConfiguracion(int sesiones, const bool *dias, const String& vigenteDesde, bool recienActualizada,
+                            const InfoResistencia &res);
 
   // Historial
   int  mostrarHistorial();   // 0 = Calibraciones, 1 = Entrenamientos, 2 = Enviar a la web, -1 = Volver al menú

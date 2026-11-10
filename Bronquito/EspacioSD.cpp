@@ -96,8 +96,7 @@ bool EspacioSD::asegurarEspacio() {
   }
 
   if (libre < MINIMO_CRITICO) {
-    ui.mostrarMensaje("No hay espacio para medir", "Enviá las pruebas a la web", COLOR_ROJO_DEL);
-    delay(3000);
+    ui.mostrarError("No hay espacio para medir", "Enviá las pruebas a la web");
     return false;
   }
   if (libre < UMBRAL_LIMPIEZA) {
