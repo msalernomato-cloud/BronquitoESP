@@ -102,8 +102,7 @@ void FlujoConexion::ofrecerEnvio() {
 
 void FlujoConexion::enviarDatos() {
   if (!net.estaConectado() || net.servidorGuardado().length() == 0) {
-    ui.mostrarMensaje("No se pudo enviar", net.textoError(SIN_RED), COLOR_ROJO_DEL);   // "Sin Wi-Fi" o "Falta conectar la computadora"
-    delay(2200);
+    ui.mostrarError("No se pudo enviar", net.textoError(SIN_RED));   // "Sin Wi-Fi" o "Falta conectar la computadora"
     return;
   }
   sincronizar();
@@ -194,8 +193,7 @@ int FlujoConexion::subirPendientes() {
     // Sin conexión, clave inválida o paciente no asignado: no tiene sentido seguir con las demás
     String motivo = (error == "usuario_no_asignado" || error == "sin_paciente_asignado")
                       ? String("El paciente no está asignado en la web") : net.textoError(http);
-    ui.mostrarMensaje("No se enviaron las pruebas", motivo, COLOR_ROJO_DEL);
-    delay(2200);
+    ui.mostrarError("No se enviaron las pruebas", motivo);
     break;
   }
   return subidas;
@@ -205,8 +203,7 @@ bool FlujoConexion::sincronizar() {
   ui.mostrarMensaje("Sincronizando...");
   RespuestaIdentificar r;
   if (!identificarCompu(net.servidorGuardado(), r)) {
-    ui.mostrarMensaje("No se pudo sincronizar", net.textoError(r.http), COLOR_ROJO_DEL);
-    delay(2200);
+    ui.mostrarError("No se pudo sincronizar", net.textoError(r.http));
     return false;
   }
   Serial.println("[SYNC] Hora local: " + reloj.fechaHoraActual());
@@ -227,9 +224,12 @@ bool FlujoConexion::sincronizar() {
   String detalle = "";
   if (subidas == 1)     detalle = "Se envió 1 prueba";
   else if (subidas > 1) detalle = "Se enviaron " + String(subidas) + " pruebas";
-  if (http == 200) ui.mostrarMensaje("¡Sincronizado!", detalle, COLOR_VERDE_OK);
-  else             ui.mostrarMensaje("No se pudo sincronizar", net.textoError(http), COLOR_ROJO_DEL);
-  delay(subidas > 0 ? 2000 : 1200);
+  if (http == 200) {
+    ui.mostrarMensaje("¡Sincronizado!", detalle, COLOR_VERDE_OK);
+    delay(subidas > 0 ? 2000 : 1200);
+  } else {
+    ui.mostrarError("No se pudo sincronizar", net.textoError(http));
+  }
   return http == 200;
 }
 
@@ -247,8 +247,7 @@ bool FlujoConexion::flujoCompu() {
     if (codigo.length() == 0) return false;
 
     if (codigo.toInt() > 255) {
-      ui.mostrarMensaje("Código inválido", "Tiene que ser de 0 a 255", COLOR_ROJO_DEL);
-      delay(1800);
+      ui.mostrarError("Código inválido", "Tiene que ser de 0 a 255");
       continue;
     }
     String ip = net.prefijoRed() + String(codigo.toInt());
@@ -261,8 +260,7 @@ bool FlujoConexion::flujoCompu() {
       delay(1500);
       return true;
     }
-    ui.mostrarMensaje("La computadora no responde", net.textoError(r.http), COLOR_ROJO_DEL);
-    delay(2200);
+    ui.mostrarError("La computadora no responde", net.textoError(r.http));
   }
 }
 
@@ -311,9 +309,7 @@ void FlujoConexion::flujoWifi() {
       // La contraseña guardada no anduvo (¿la cambiaron?): se olvida y se vuelve a la lista de redes.
       // Al elegir la red de nuevo se pide la contraseña, como la primera vez
       net.olvidarRed(ssid);
-      ui.mostrarMensaje("No se pudo conectar a " + ssid.substring(0, 18), "Elegí la red e ingresá la contraseña",
-                        COLOR_ROJO_DEL);
-      delay(2500);
+      ui.mostrarError("No se pudo conectar a " + ssid.substring(0, 18), "Elegí la red e ingresá la contraseña");
       continue;
     }
 
@@ -326,10 +322,9 @@ void FlujoConexion::flujoWifi() {
       return;
     }
     if (r == RES_WIFI_INCOMPATIBLE) {
-      ui.mostrarMensaje("Red no compatible", "Usá el Wi-Fi de tu casa o un hotspot", COLOR_ROJO_DEL);
+      ui.mostrarError("Red no compatible", "Usá el Wi-Fi de tu casa o un hotspot");
     } else {
-      ui.mostrarMensaje("No se pudo conectar", "Revisá la contraseña", COLOR_ROJO_DEL);
+      ui.mostrarError("No se pudo conectar", "Revisá la contraseña");
     }
-    delay(1800);
   }
 }
