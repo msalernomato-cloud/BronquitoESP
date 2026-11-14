@@ -1,12 +1,13 @@
 #include "FlujoEntrenamiento.h"
 #include "AnalisisEntrenamiento.h"
 
-static const float DC_ENTRENAMIENTO   = 4.0f;    // duty cycle del PWM del servo durante el entrenamiento (%)
+// Sin servo por ahora: el "dc" del .json queda en null
+static const float DC_ENTRENAMIENTO   = NAN;
 static const float SIN_RESPIRAR_MAX_S = 10.0f;   // sin flujo durante esto, la sesión se corta sola
 
-FlujoEntrenamiento::FlujoEntrenamiento(BronquitoUI &ui, RespiratorySensors &sensoresResp, ValvulaActiva &valvula,
-                                       TarjetaSD &tarjeta, Reloj &reloj)
-  : ui(ui), sensoresResp(sensoresResp), valvula(valvula), tarjeta(tarjeta), reloj(reloj) {}
+FlujoEntrenamiento::FlujoEntrenamiento(BronquitoUI &ui, RespiratorySensors &sensoresResp, TarjetaSD &tarjeta,
+                                       Reloj &reloj)
+  : ui(ui), sensoresResp(sensoresResp), tarjeta(tarjeta), reloj(reloj) {}
 
 void FlujoEntrenamiento::mostrarError(const String &titulo, const String &mensaje) {
   Serial.println("[ENT] " + titulo + ": " + mensaje);
@@ -15,25 +16,20 @@ void FlujoEntrenamiento::mostrarError(const String &titulo, const String &mensaj
 }
 
 void FlujoEntrenamiento::ejecutar() {
+  // Hasta ~34 caracteres por renglón: más largo se sale del recuadro (tamaño 2 = 12 px por letra)
   const String lInstr[4] = {
     "1. Poné la boquilla.",
-    "2. Desde vaciar los pulmones, inspirá",
-    "   rápido y profundo hasta llenarte.",
-    "3. Espirá todo y repetí (" + String(ciclosObjetivo) + " ciclos)."
+    "2. Vaciá los pulmones e inspirá",
+    "   rápido y hondo hasta llenarte.",
+    "3. Espirá todo y repetí " + String(ciclosObjetivo) + " veces."
   };
   if (!ui.mostrarPasoCalibracion("Entrenamiento muscular", "Instrucciones:", lInstr, 4, "COMENZAR", COLOR_VERDE_OK))
     return;
 
-  // 1) Preparación: archivo en la SD y válvula en la posición de entrenamiento
-  if (!valvula.disponible()) { mostrarError("No se pudo iniciar", "Revisá la válvula (GPIO5)"); return; }
-  String id = tarjeta.nuevoIdEntrenamiento(reloj.fechaHoraActual());
+  // 1) Preparación: archivo en la SD
+  String fechaHora = reloj.fechaHoraActual();   // la del inicio: va en el id y en el .json
+  String id = tarjeta.nuevoIdEntrenamiento(fechaHora);
   if (!tarjeta.iniciarEntrenamiento(id)) { mostrarError("No se pudo iniciar", "No se pudo escribir en la SD"); return; }
-  if (!valvula.configurarEntrenamiento()) {
-    valvula.abrir();
-    tarjeta.descartarEntrenamiento(id);
-    mostrarError("No se pudo iniciar", "No se pudo ajustar la válvula");
-    return;
-  }
 
   // 2) Pantalla primero y RECIÉN DESPUÉS la tara (igual que en la calibración: escribir la pantalla
   //    después de la tara corre el cero de los sensores)
@@ -41,8 +37,8 @@ void FlujoEntrenamiento::ejecutar() {
   sensoresResp.realizarTara();
   ui.setHintPim("Ya puede empezar");   // es la señal para empezar
   delay(50);                           // que la señal se asiente tras escribir
-  Serial.printf("[ENT] Iniciado %s | DC %.1f%% | objetivo %d ciclos | cero (tara): %.4f V\n", id.c_str(),
-                DC_ENTRENAMIENTO, ciclosObjetivo, sensoresResp.getVZeroFlujo());
+  Serial.printf("[ENT] Iniciado %s | objetivo %d ciclos | cero (tara): %.4f V\n", id.c_str(), ciclosObjetivo,
+                sensoresResp.getVZeroFlujo());
 
   // 3) Captura: las muestras van a la SD de a bloques y, en vivo, SOLO se cuentan los ciclos
   //    (las features se calculan al final). Termina sola al llegar al objetivo, si no respira durante
@@ -66,7 +62,6 @@ void FlujoEntrenamiento::ejecutar() {
       });
   float duracion_s = (millis() - t0) / 1000.0f;
   bool csvOk = tarjeta.cerrarEntrenamiento();
-  if (!valvula.abrir()) Serial.println("[ENT] Error: la válvula no pudo volver a la posición abierta");
   Serial.printf("[ENT] Fin (%s): %.1f s | %d ciclos | resultado de la captura %d\n", fin, duracion_s,
                 contador.ciclos(), (int)r);
 
@@ -118,14 +113,14 @@ void FlujoEntrenamiento::ejecutar() {
   else
     Serial.println("[ENT] No se pudieron calcular las features: se guardan en null");
 
-  if (!tarjeta.guardarEntrenamiento(id, duracion_s, DC_ENTRENAMIENTO, estado, fin, ciclosObjetivo,
+  if (!tarjeta.guardarEntrenamiento(id, fechaHora, duracion_s, DC_ENTRENAMIENTO, estado, fin, ciclosObjetivo,
                                     hayFeatures ? &features : nullptr)) {
     mostrarError("Error en SD", "No se pudo guardar la medición");
     return;
   }
   Serial.println("[ENT] Sesión guardada: " + id);
   ui.mostrarMensaje("Entrenamiento guardado",
-                    hayFeatures ? "La válvula quedó abierta" : "Sin features (ver serie)",
+                    hayFeatures ? "" : "Sin features (ver serie)",
                     hayFeatures ? COLOR_VERDE_OK : COLOR_ROJO_DEL);
   delay(1500);
 }

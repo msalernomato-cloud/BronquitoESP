@@ -103,6 +103,26 @@ struct ResumenMedicion {
   float temperatura_c = NAN, humedad_pct = NAN;
 };
 
+// ---- Resumen de un entrenamiento leído del .json (para el historial) --------
+// Solo las features globales (el "resumen" del .json), sin las de cada ciclo. Lo que no está en el
+// archivo (o es null) queda en NAN / 0 y la pantalla muestra "--".
+struct ResumenEntrenamiento {
+  String estado, fin;                 // "completa" | "incompleta" | "interrumpida" ; por qué terminó
+  int   ciclosObjetivo = 0;
+  float duracion_s = NAN;
+  bool  hayFeatures = false;          // false: el resumen quedó en null (no se pudo analizar)
+  // Promedios por ciclo
+  float ti_s = NAN, te_s = NAN, pausa_s = NAN, ti_ttot = NAN;
+  float pif_Lmin = NAN, pef_Lmin = NAN, volInsp_L = NAN, volEsp_L = NAN;
+  float pim_cmH2O = NAN, pem_cmH2O = NAN, trabajoInsp_J = NAN, potenciaInsp_W = NAN;
+  // Multiciclo
+  int   nCiclos = 0, nFasesSueltas = 0;
+  float periodo_s = NAN, frecuencia_rpm = NAN, ventilacionMinuto_Lmin = NAN, trabajoTotalInsp_J = NAN;
+  float pendientePim = NAN, caidaPim_pct = NAN;
+  float pifMax_Lmin = NAN, pefMax_Lmin = NAN, pimMax_cmH2O = NAN, pemMax_cmH2O = NAN;
+  int   pifMaxCiclo = 0, pefMaxCiclo = 0, pimMaxCiclo = 0, pemMaxCiclo = 0;   // 0 = no se sabe
+};
+
 // ---- Señal de una medición leída del .csv (para graficar) ------------------
 struct SerieMedicion {
   std::vector<float> t, p, q, v;   // tiempo (s), presión (cmH2O), flujo (L/min), volumen (L)
@@ -197,8 +217,10 @@ public:
   bool cargarSenalEntrenamiento(const String &id, AnalisisEntrenamiento::SenalEntrenamiento &senal);
   // estado: "completa" | "incompleta" | "interrumpida". fin: por qué terminó ("objetivo", "detenida",
   // "sin_respiracion", "tiempo_maximo"). features == nullptr: no se pudieron calcular (van en null).
-  bool guardarEntrenamiento(const String &id, float duracion_s, float dcServo, const char *estado, const char *fin,
-                            int ciclosObjetivo, const AnalisisEntrenamiento::FeaturesEntrenamiento *features);
+  // fechaHora: la de Reloj::fechaHoraActual() al empezar (si no hay hora, no se guarda)
+  bool guardarEntrenamiento(const String &id, const String &fechaHora, float duracion_s, float dcServo,
+                            const char *estado, const char *fin, int ciclosObjetivo,
+                            const AnalisisEntrenamiento::FeaturesEntrenamiento *features);
   bool descartarEntrenamiento(const String &id);
 
   // =========================================================================
@@ -209,6 +231,11 @@ public:
   int listarMediciones(String *ids, String *fechas, String *tipos, int max);
   bool leerResumen(const String &id, ResumenMedicion &resumen);   // el .json de una medición
   bool cargarSerie(const String &id, SerieMedicion &serie); // el .csv, con el volumen calculado
+
+  // Entrenamientos guardados, del más nuevo al más viejo (hasta 'max'). -1 si no hay tarjeta.
+  // tipos = "ciclos hechos/objetivo" (ej. "12/30 ciclos")
+  int listarEntrenamientos(String *ids, String *fechas, String *tipos, int max);
+  bool leerResumenEntrenamiento(const String &id, ResumenEntrenamiento &resumen);   // el .json
 
   // =========================================================================
   // MANTENIMIENTO

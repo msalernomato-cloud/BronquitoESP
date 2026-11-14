@@ -99,16 +99,127 @@ void FlujoHistorial::flujoCalibraciones() {
   }
 }
 
+// ---- Entrenamientos ----------------------------------------------------------
+
+// Tarjeta con la etiqueta armada en el momento (ej. "PIM máxima (ciclo 3)")
+static MetricaItem metricaTexto(const String &etiqueta, const String &valor, const char *unidad) {
+  MetricaItem m;
+  m.etiqueta = etiqueta;
+  m.valor = valor;
+  m.unidad = unidad;
+  return m;
+}
+
+// "PIF máximo" -> "PIF máximo (ciclo 4)" si se sabe en qué ciclo fue
+static String conCiclo(const char *etiqueta, int ciclo) {
+  return ciclo > 0 ? String(etiqueta) + " (ciclo " + String(ciclo) + ")" : String(etiqueta);
+}
+
+static String textoEstado(const String &estado) {
+  if (estado == "completa")     return "Completa";
+  if (estado == "incompleta")   return "Incompleta";
+  if (estado == "interrumpida") return "Interrumpida";
+  return estado.length() ? estado : String("--");
+}
+
+static String textoFin(const String &fin) {
+  if (fin == "objetivo")        return "Llegó al objetivo de ciclos";
+  if (fin == "detenida")        return "La detuvo el usuario";
+  if (fin == "sin_respiracion") return "Se cortó: sin respiración";
+  if (fin == "tiempo_maximo")   return "Se cortó: tiempo máximo";
+  return fin.length() ? fin : String("--");
+}
+
+void FlujoHistorial::verEntrenamiento(const String &id, const String &fecha) {
+  ResumenEntrenamiento r;
+  if (!tarjeta.leerResumenEntrenamiento(id, r)) {
+    ui.mostrarMensaje("No se pudo leer", "Archivo vacío o dañado", COLOR_ROJO_DEL);
+    delay(2000);
+    return;
+  }
+
+  String duracion = "--";
+  if (!isnan(r.duracion_s)) {
+    int seg = (int)lroundf(r.duracion_s);
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d:%02d", seg / 60, seg % 60);
+    duracion = buf;
+  }
+  String ciclos = (r.hayFeatures ? String(r.nCiclos) : String("--")) + "/" + String(r.ciclosObjetivo);
+
+  // Todas las features globales del .json ("resumen"), agrupadas en 4 páginas
+  const int PAGINAS = 4;
+  const String titulos[PAGINAS] = {"Sesión", "Presiones", "Flujo y volumen", "Tiempo y trabajo"};
+  MetricaItem m[25];
+  int porPagina[PAGINAS];
+  int n = 0, k0;
+
+  k0 = n;   // Sesión
+  m[n++] = metrica("Ciclos completos", ciclos, "");
+  m[n++] = metrica("Duración", duracion, "min");
+  m[n++] = metrica("Frecuencia", texto(r.frecuencia_rpm, 1), "rpm");
+  m[n++] = metrica("Período medio", texto(r.periodo_s, 2), "s");
+  m[n++] = metrica("Ventilación minuto", texto(r.ventilacionMinuto_Lmin, 1), "L/min");
+  m[n++] = metrica("Fases sueltas", r.hayFeatures ? String(r.nFasesSueltas) : String("--"), "");
+  porPagina[0] = n - k0;
+
+  k0 = n;   // Presiones
+  m[n++] = metrica("PIM promedio", texto(r.pim_cmH2O, 1), "cmH2O");
+  m[n++] = metricaTexto(conCiclo("PIM máxima", r.pimMaxCiclo), texto(r.pimMax_cmH2O, 1), "cmH2O");
+  m[n++] = metrica("PEM promedio", texto(r.pem_cmH2O, 1), "cmH2O");
+  m[n++] = metricaTexto(conCiclo("PEM máxima", r.pemMaxCiclo), texto(r.pemMax_cmH2O, 1), "cmH2O");
+  m[n++] = metrica("Caída de la PIM", texto(r.caidaPim_pct, 1), "%");
+  m[n++] = metrica("Pendiente de la PIM (por ciclo)", texto(r.pendientePim, 1), "cmH2O");
+  porPagina[1] = n - k0;
+
+  k0 = n;   // Flujo y volumen
+  m[n++] = metrica("PIF promedio", texto(r.pif_Lmin, 0), "L/min");
+  m[n++] = metricaTexto(conCiclo("PIF máximo", r.pifMaxCiclo), texto(r.pifMax_Lmin, 0), "L/min");
+  m[n++] = metrica("PEF promedio", texto(r.pef_Lmin, 0), "L/min");
+  m[n++] = metricaTexto(conCiclo("PEF máximo", r.pefMaxCiclo), texto(r.pefMax_Lmin, 0), "L/min");
+  m[n++] = metrica("Volumen inspirado promedio", texto(r.volInsp_L, 2), "L");
+  m[n++] = metrica("Volumen espirado promedio", texto(r.volEsp_L, 2), "L");
+  porPagina[2] = n - k0;
+
+  k0 = n;   // Tiempo y trabajo
+  m[n++] = metrica("Ti promedio", texto(r.ti_s, 2), "s");
+  m[n++] = metrica("Te promedio", texto(r.te_s, 2), "s");
+  m[n++] = metrica("Pausa promedio", texto(r.pausa_s, 2), "s");
+  m[n++] = metrica("Ti / Ttot", texto(r.ti_ttot, 2), "");
+  m[n++] = metrica("Trabajo inspiratorio promedio", texto(r.trabajoInsp_J, 2), "J");
+  m[n++] = metrica("Potencia inspiratoria promedio", texto(r.potenciaInsp_W, 2), "W");
+  m[n++] = metrica("Trabajo inspiratorio total", texto(r.trabajoTotalInsp_J, 2), "J");
+  porPagina[3] = n - k0;
+
+  String pie = textoEstado(r.estado) + " | " + (r.hayFeatures ? textoFin(r.fin) : String("Sin features"));
+  ui.mostrarResumenEntrenamiento(titulos, fecha, m, porPagina, PAGINAS, pie);
+}
+
+void FlujoHistorial::flujoEntrenamientos() {
+  String ids[MAX_HIST], fechas[MAX_HIST], tipos[MAX_HIST];
+
+  ui.mostrarMensaje("Leyendo tarjeta SD...");
+  int n = tarjeta.listarEntrenamientos(ids, fechas, tipos, MAX_HIST);
+  if (n < 0) {
+    ui.mostrarMensaje("No se pudo leer", "No se detectó la tarjeta SD", COLOR_ROJO_DEL);
+    delay(2000);
+    return;
+  }
+
+  int pagina = 0;   // se mantiene entre un entrenamiento y otro
+  while (true) {
+    int sel = ui.elegirEntrenamiento(fechas, tipos, n, pagina);
+    if (sel < 0) return;
+    verEntrenamiento(ids[sel], fechas[sel]);
+  }
+}
+
 bool FlujoHistorial::ejecutar() {
   while (true) {
     int op = ui.mostrarHistorial();
     if (op < 0) return false;
     if (op == 2) return true;
-    if (op == 0) {
-      flujoCalibraciones();
-    } else {
-      ui.mostrarMensaje("Entrenamientos", "Próximamente", BRONQUITO_CYAN);
-      delay(1500);
-    }
+    if (op == 0) flujoCalibraciones();
+    else         flujoEntrenamientos();
   }
 }

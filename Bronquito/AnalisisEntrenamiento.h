@@ -16,6 +16,7 @@
 // Diferencia con el Python: el sentido de cada fase sale SIEMPRE de la presión (signo de la presión
 // pesada por |flujo|). No hay umbral de ruido ni se usa el signo del flujo del equipo como alternativa
 // (el equipo también saca ese signo de la presión, muestra por muestra, así que no agrega nada).
+// Además se descartan las fases con menos de VOL_MIN_FASE_L (el Python no lo hace).
 //
 // Convenciones (placa actual): presión > 0 = INSPIRACIÓN; flujo del equipo < 0 = inspiración.
 // Flujos y volúmenes de las features en magnitud. PIM positiva, PEM negativa (respecto del reposo).
@@ -48,6 +49,13 @@ const double VENTANA_PICO_S        = 0.60;
 const double HUECO_UNION_S         = 0.15;
 const double DURACION_MIN_S        = 0.10;
 const double MAX_PAUSA_CICLO_S     = 2.0;
+const double CMH2O_L_A_J           = 98.0665e-3; // 1 cmH2O·L = 98,0665 Pa × 0,001 m³ = 0,0981 J
+
+// Volumen mínimo de una fase (no está en el Python). Antes de que la persona empiece (y al terminar)
+// aparecen "fases" de ruido que pasan los umbrales de flujo pero mueven muy poco aire: en las sesiones
+// medidas tienen 0,07-0,4 L, contra 0,8-2,9 L de una respiración de entrenamiento. Una fase con menos
+// volumen se descarta (no forma ciclo ni cuenta como fase suelta). Se aplica igual en vivo y al final.
+const double VOL_MIN_FASE_L        = 0.30;
 
 // Solo del contador en vivo (no están en el Python)
 const double DESCARTE_INICIAL_S    = 0.2;        // el arranque de la captura no es reposo
@@ -105,6 +113,8 @@ struct EventoRespiratorio {
   float flujoPico_Lmin, tPico_s;  // magnitud
   float volumen_L;                // magnitud
   float presionPico_cmH2O, tPresionPico_s;   // con signo, sin el reposo
+  float trabajo_J;                // ∫ presión (sin reposo) × |flujo| dt, positivo si la presión acompaña
+                                  // a la fase: trabajo contra la resistencia del dispositivo
 };
 
 struct CicloRespiratorio {
@@ -114,6 +124,8 @@ struct CicloRespiratorio {
   float pif_Lmin, pef_Lmin;
   float vol_insp_L, vol_esp_L;
   float pim_cmH2O, pem_cmH2O;
+  float trabajo_insp_J;           // trabajo de la inspiración contra el dispositivo
+  float potencia_insp_W;          // trabajo_insp_J / ti_s (potencia media de la inspiración)
   float t_pif_s, t_pef_s, t_pim_s, t_pem_s;
 };
 
@@ -125,11 +137,13 @@ struct FeaturesEntrenamiento {
   float prom_ti_s = NAN, prom_te_s = NAN, prom_pausa_s = NAN, prom_ti_ttot = NAN;
   float prom_pif_Lmin = NAN, prom_pef_Lmin = NAN, prom_vol_insp_L = NAN, prom_vol_esp_L = NAN;
   float prom_pim_cmH2O = NAN, prom_pem_cmH2O = NAN;
+  float prom_trabajo_insp_J = NAN, prom_potencia_insp_W = NAN;
 
   // Multiciclo
   int n_ciclos_completos = 0;
   int n_fases_sueltas = 0;
   float periodo_medio_s = NAN, frecuencia_rpm = NAN, ventilacion_minuto_Lmin = NAN;
+  float trabajo_total_insp_J = 0.0f;   // suma sobre los ciclos (0 sin ciclos, como el Python)
   float pendiente_pim_por_ciclo = NAN, caida_pim_pct = NAN;
   float pif_max_Lmin = NAN, pef_max_Lmin = NAN, pim_max_cmH2O = NAN, pem_max_cmH2O = NAN;
   int pif_max_ciclo = 0, pef_max_ciclo = 0, pim_max_ciclo = 0, pem_max_ciclo = 0;   // 0 = null
@@ -173,7 +187,7 @@ inline void reposoYRuido(const std::vector<int16_t> &x, float &centro, float &si
 // Se le pasan las muestras de a una (t en s, flujo y presión como salen del equipo). Igual que el
 // Python: tramos con histéresis 40/10 L/min, corte en los valles hondos (se confirma 0,6 s después,
 // cuando ya se vio el pico de la derecha), sentido de cada pedazo por la presión pesada por |flujo|,
-// unión de pedazos del mismo sentido y descarte de fases cortas. Un ciclo se cuenta cuando se cierra
+// unión de pedazos del mismo sentido y descarte de fases cortas o con poco volumen. Un ciclo se cuenta cuando se cierra
 // la espiración que sigue a una inspiración (unos 0,15 s después de que termina de espirar).
 // Memoria: solo el tramo en curso (como mucho MAX_MUESTRAS_TRAMO muestras).
 class ContadorCiclos {
@@ -234,6 +248,7 @@ private:
   bool hayFase = false;
   int faseSentido = REPOSO;
   double faseIni = 0.0, faseFin = 0.0;
+  double faseVol = 0.0;              // L, suma de los pedazos unidos
 
   // Última fase emitida (para armar ciclos)
   int ultimaFase = REPOSO;
@@ -303,12 +318,21 @@ private:
   // Sentido por la presión pesada por |flujo| (siempre por presión: ver el comentario del principio)
   static int sentido(double w) { return (w > 0) ? INSPIRACION : ESPIRACION; }
 
+  // Volumen de un pedazo [a, z] (trapecios de |flujo|, en L)
+  double volumenPieza(int a, int z) const {
+    double v = 0.0;
+    for (int k = a + 1; k <= z; k++) v += 0.5 * (mg[k] + mg[k - 1]) / 60.0 * (tt[k] - tt[k - 1]);
+    return v;
+  }
+
   // Sentido de un pedazo [a, z] y unión con la fase en armado
   void cerrarPieza(int a, int z) {
     int f = sentido(sW[z + 1] - sW[a]);
+    double vol = volumenPieza(a, z);
 
     if (hayFase && faseSentido == f && tt[a] - faseFin <= HUECO_UNION_S) {
       faseFin = tt[z];
+      faseVol += vol;
       return;
     }
     if (hayFase) emitirFase();
@@ -316,11 +340,13 @@ private:
     faseSentido = f;
     faseIni = tt[a];
     faseFin = tt[z];
+    faseVol = vol;
   }
 
   void emitirFase() {
     hayFase = false;
     if (faseFin - faseIni < DURACION_MIN_S) return;   // ruido
+    if (faseVol < VOL_MIN_FASE_L) return;             // ruido: pasa los umbrales de flujo pero casi no mueve aire
     if (faseSentido == ESPIRACION && ultimaFase == INSPIRACION && faseIni - ultimaFin <= MAX_PAUSA_CICLO_S) {
       nCiclos++;
       nuevosCiclos++;
@@ -502,18 +528,27 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
     e.iInicio = fs.a; e.iFin = fs.z;
     e.tInicio_s = (float)T(fs.a); e.tFin_s = (float)T(fs.z);
     e.duracion_s = (float)(T(fs.z) - T(fs.a));
-    double vol = 0.0;
+    double vol = 0.0, trabajo = 0.0;
     int iPico = fs.a, iPres = fs.a;
     for (int k = fs.a; k <= fs.z; k++) {
       if (L(k) > L(iPico)) iPico = k;
-      if (k > fs.a) vol += 0.5 * (L(k) + L(k - 1)) / 60.0 * (T(k) - T(k - 1));
+      if (k > fs.a) {
+        // Trapecios: volumen = ∫|Q| dt ; trabajo = ∫ P·|Q| dt (P sin reposo, con el signo de la fase)
+        double dt = T(k) - T(k - 1);
+        vol += 0.5 * (L(k) + L(k - 1)) / 60.0 * dt;
+        trabajo += 0.5 * (fs.f * PF(k) * L(k) + fs.f * PF(k - 1) * L(k - 1)) / 60.0 * dt;
+      }
       if (fs.f * PF(k) > fs.f * PF(iPres)) iPres = k;
     }
+    e.trabajo_J = (float)(trabajo * CMH2O_L_A_J);
     e.flujoPico_Lmin = L(iPico);
     e.tPico_s = (float)T(iPico);
     e.volumen_L = (float)vol;
     e.presionPico_cmH2O = SIGNO_PRESION_INSPIRACION * PF(iPres);
     e.tPresionPico_s = (float)T(iPres);
+    // Ruido (típico antes de que la persona empiece): se descarta como si no hubiera estado, así no
+    // forma un ciclo ni separa una inspiración de su espiración
+    if (e.volumen_L < VOL_MIN_FASE_L) continue;
     eventos.push_back(e);
   }
 
@@ -531,6 +566,8 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
     c.pif_Lmin = in.flujoPico_Lmin; c.pef_Lmin = es.flujoPico_Lmin;
     c.vol_insp_L = in.volumen_L; c.vol_esp_L = es.volumen_L;
     c.pim_cmH2O = in.presionPico_cmH2O; c.pem_cmH2O = es.presionPico_cmH2O;
+    c.trabajo_insp_J = in.trabajo_J;
+    c.potencia_insp_W = in.trabajo_J / in.duracion_s;   // la duración es >= DURACION_MIN_S (nunca 0)
     c.t_pif_s = in.tPico_s; c.t_pef_s = es.tPico_s;
     c.t_pim_s = in.tPresionPico_s; c.t_pem_s = es.tPresionPico_s;
     out.ciclos.push_back(c);
@@ -557,6 +594,13 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
   out.prom_vol_esp_L = media(&CicloRespiratorio::vol_esp_L);
   out.prom_pim_cmH2O = media(&CicloRespiratorio::pim_cmH2O);
   out.prom_pem_cmH2O = media(&CicloRespiratorio::pem_cmH2O);
+  out.prom_trabajo_insp_J = media(&CicloRespiratorio::trabajo_insp_J);
+  out.prom_potencia_insp_W = media(&CicloRespiratorio::potencia_insp_W);
+  {
+    double total = 0;
+    for (auto &c : C) total += c.trabajo_insp_J;
+    out.trabajo_total_insp_J = (float)total;
+  }
 
   if (nc >= 2) {
     double sp = 0;

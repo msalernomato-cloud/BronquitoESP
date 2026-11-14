@@ -123,6 +123,14 @@ public:
   // Resumen de una evaluación. Devuelve 0 = Volver, 1 = Graficar
   // "pie" = condiciones ambientales, en dos renglones separados por " | "
   int  mostrarResumenCalibracion(const String& titulo, const String& fecha, const MetricaItem *m, int n, const String& pie = "");
+  // Entrenamientos: misma lista que elegirCalibracion (otro título). Devuelve el índice elegido, o -1 = Volver
+  int  elegirEntrenamiento(const String *fechas, const String *tipos, int n, int &pagina);
+  // Resumen de un entrenamiento en varias páginas de tarjetas (hasta 8 por página), SIN gráficos.
+  // m tiene todas las métricas seguidas; porPagina[k] dice cuántas van en la página k y titulos[k] su
+  // título. "Siguiente" pasa a la página de al lado (después de la última vuelve a la primera).
+  // "pie" = cómo terminó la sesión, en dos renglones separados por " | ". Vuelve al tocar "Volver".
+  void mostrarResumenEntrenamiento(const String *titulos, const String& fecha, const MetricaItem *m,
+                                   const int *porPagina, int paginas, const String& pie = "");
   // Gráfico x-y. Devuelve 0 = Volver, 1 = botón alternativo (si botonAlt no está vacío)
   // flujo: si se pasa, cada tramo se pinta según su signo (espiración / inspiración) y se agrega la leyenda
   int  mostrarGrafico(const String& titulo, const String& etiquetaX, const String& etiquetaY,

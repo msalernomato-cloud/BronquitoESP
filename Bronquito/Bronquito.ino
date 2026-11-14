@@ -11,7 +11,6 @@
 #include "FlujoConexion.h"
 #include "FlujoCalibracion.h"
 #include "FlujoHistorial.h"
-#include "ValvulaActiva.h"
 #include "FlujoEntrenamiento.h"
 #include "EspacioSD.h"
 
@@ -22,7 +21,6 @@ BronquitoUI ui;
 TarjetaSD tarjeta(19, 22, 23, 21);     // microSD: CS, SCK, MISO, MOSI
 BronquitoNetwork net;
 RespiratorySensors sensoresResp(36, 39);
-ValvulaActiva valvula;                 // servo de la válvula activa: PWM 50 Hz en GPIO5
 
 const int DHT_PIN = 27;                // DHT22 (temperatura y humedad para la corrección BTPS). En la placa: pin 1 del conector del DFPlayer (J2). En el GPIO2 no leía por el LED de la ESP32
 BTPSSensor btps(DHT_PIN, DHT22);
@@ -41,7 +39,7 @@ FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
 FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
 FlujoHistorial   historial(ui, tarjeta);
 FlujoConfiguracion configuracion(ui, tarjeta, net, reloj);
-FlujoEntrenamiento entrenamiento(ui, sensoresResp, valvula, tarjeta, reloj);
+FlujoEntrenamiento entrenamiento(ui, sensoresResp, tarjeta, reloj);
 EspacioSD        espacioSD(ui, tarjeta, conexion, estadoActual);
 
 void leerComandosSerie() {
@@ -77,7 +75,6 @@ void setup() {
   Serial.println("[BOOT] 3 - sensoresResp.begin()");
   sensoresResp.begin();
   btps.begin();
-  valvula.begin();                     // deja la válvula abierta (DC 9%)
   Serial.println("[BOOT] 4 - tarjeta.leerPerfil()");
 
   EstadoTarjeta result = tarjeta.leerPerfil();

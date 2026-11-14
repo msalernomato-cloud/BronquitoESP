@@ -21,6 +21,10 @@ private:
   void flujoCalibraciones();
   void verEvaluacion(const String &id, const String &fecha);
   void graficarEvaluacion(const String &id, bool esPim);
+
+  // Entrenamientos: lista y resumen con las features globales (sin señales ni gráficos)
+  void flujoEntrenamientos();
+  void verEntrenamiento(const String &id, const String &fecha);
 };
 
 #endif

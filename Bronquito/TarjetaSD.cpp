@@ -488,8 +488,8 @@ static void ponerCiclo(JsonObject obj, const char *clave, int ciclo) {
   else obj[clave] = nullptr;
 }
 
-bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float dcServo, const char *estado,
-                                     const char *fin, int ciclosObjetivo,
+bool TarjetaSD::guardarEntrenamiento(const String &id, const String &fechaHora, float duracion_s, float dcServo,
+                                     const char *estado, const char *fin, int ciclosObjetivo,
                                      const AnalisisEntrenamiento::FeaturesEntrenamiento *features) {
   if (id.length() == 0 || errorEntrenamiento || !hayTarjeta()) return false;
   cerrarEntrenamiento();
@@ -500,6 +500,7 @@ bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float d
   JsonDocument doc;
   JsonObject raiz = doc.to<JsonObject>();
   raiz["version"] = 1;
+  if (fechaHora.length() >= 16) raiz["fecha_hora"] = fechaHora;   // igual que las evaluaciones ("sin hora": no va)
   ponerNumero(raiz, "duracion_s", duracion_s, 2);
   ponerNumero(raiz, "dc", dcServo, 1);            // duty cycle del PWM del servo (%), no el de la respiración
   raiz["estado"] = estado;
@@ -527,6 +528,8 @@ bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float d
       ponerNumero(o, "vol_esp_L", c.vol_esp_L, 2);
       ponerNumero(o, "pim_cmH2O", c.pim_cmH2O, 1);
       ponerNumero(o, "pem_cmH2O", c.pem_cmH2O, 1);
+      ponerNumero(o, "trabajo_insp_J", c.trabajo_insp_J, 2);
+      ponerNumero(o, "potencia_insp_W", c.potencia_insp_W, 2);
       ponerNumero(o, "t_pif_s", c.t_pif_s, 2);
       ponerNumero(o, "t_pef_s", c.t_pef_s, 2);
       ponerNumero(o, "t_pim_s", c.t_pim_s, 2);
@@ -545,6 +548,8 @@ bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float d
     ponerNumero(prom, "vol_esp_L", F.prom_vol_esp_L, 2);
     ponerNumero(prom, "pim_cmH2O", F.prom_pim_cmH2O, 1);
     ponerNumero(prom, "pem_cmH2O", F.prom_pem_cmH2O, 1);
+    ponerNumero(prom, "trabajo_insp_J", F.prom_trabajo_insp_J, 2);
+    ponerNumero(prom, "potencia_insp_W", F.prom_potencia_insp_W, 2);
 
     JsonObject multi = resumen["multiciclo"].to<JsonObject>();
     multi["n_ciclos_completos"] = F.n_ciclos_completos;
@@ -552,6 +557,7 @@ bool TarjetaSD::guardarEntrenamiento(const String &id, float duracion_s, float d
     ponerNumero(multi, "periodo_medio_s", F.periodo_medio_s, 2);
     ponerNumero(multi, "frecuencia_rpm", F.frecuencia_rpm, 1);
     ponerNumero(multi, "ventilacion_minuto_Lmin", F.ventilacion_minuto_Lmin, 1);
+    ponerNumero(multi, "trabajo_total_insp_J", F.trabajo_total_insp_J, 2);
     ponerNumero(multi, "pendiente_pim_por_ciclo", F.pendiente_pim_por_ciclo, 1);
     ponerNumero(multi, "caida_pim_pct", F.caida_pim_pct, 1);
     ponerNumero(multi, "pif_max_Lmin", F.pif_max_Lmin, 1);
@@ -664,6 +670,107 @@ bool TarjetaSD::leerResumen(const String &id, ResumenMedicion &r) {
   r.intentoInformado   = doc["intento_informado"] | 0;
   r.temperatura_c = numero("temperatura_c");
   r.humedad_pct   = numero("humedad_rel_pct");
+  return true;
+}
+
+// ---- Historial de entrenamientos --------------------------------------------
+// Orden de los ids, como claveOrden() pero con el prefijo de los entrenamientos: los "ent_SINHORA_n" van
+// antes que los que tienen fecha y entre ellos por número (ent_SINHORA_10 después de ent_SINHORA_9)
+static String claveOrdenEntrenamiento(const String &id) {
+  const String prefijo = "ent_SINHORA_";
+  if (!id.startsWith(prefijo)) return "2" + id;
+  int fin = prefijo.length();
+  while (fin < (int)id.length() && isDigit(id[fin])) fin++;
+  String numero = id.substring(prefijo.length(), fin);
+  while (numero.length() < 8) numero = "0" + numero;
+  return "1" + numero + id.substring(fin);
+}
+
+int TarjetaSD::listarEntrenamientos(String *ids, String *fechas, String *tipos, int max) {
+  if (!hayTarjeta()) return -1;
+
+  // 1) Ids de los .json, del más nuevo al más viejo (inserción, quedan los 'max' más nuevos)
+  int cantidad = 0;
+  for (const String &ruta : listarArchivos(CARPETA_ENTRENAMIENTOS)) {
+    String nombre = ruta.substring(ruta.lastIndexOf('/') + 1);
+    if (!nombre.endsWith(".json") || !nombre.startsWith("ent_")) continue;
+    String id = nombre.substring(0, nombre.length() - 5);
+
+    int pos = cantidad;
+    String clave = claveOrdenEntrenamiento(id);
+    while (pos > 0 && clave > claveOrdenEntrenamiento(ids[pos - 1])) pos--;
+    if (pos >= max) continue;
+    int fin = (cantidad < max) ? cantidad : max - 1;
+    for (int k = fin; k > pos; k--) ids[k] = ids[k - 1];
+    ids[pos] = id;
+    if (cantidad < max) cantidad++;
+  }
+
+  // 2) Fecha y ciclos de cada uno, para la lista en pantalla
+  for (int i = 0; i < cantidad; i++) {
+    String fechaHora = "";
+    int hechos = -1, objetivo = 0;
+    JsonDocument doc;
+    if (leerJson(rutaEntrenamiento(ids[i], ".json"), doc)) {
+      fechaHora = String(doc["fecha_hora"] | "");
+      objetivo  = doc["ciclos_objetivo"] | 0;
+      JsonVariantConst nc = doc["resumen"]["multiciclo"]["n_ciclos_completos"];
+      if (!nc.isNull()) hechos = nc.as<int>();
+    }
+    tipos[i] = (hechos >= 0 ? String(hechos) : String("--")) + "/" + String(objetivo) + " ciclos";
+    fechas[i] = fechaLegible(fechaHora, ids[i]);
+    // Sin hora todos dirían "Sin fecha": se agrega el número para distinguirlos
+    if (fechas[i] == "Sin fecha" && ids[i].startsWith("ent_SINHORA_"))
+      fechas[i] = "Sin fecha #" + ids[i].substring(12);
+  }
+  return cantidad;
+}
+
+bool TarjetaSD::leerResumenEntrenamiento(const String &id, ResumenEntrenamiento &r) {
+  JsonDocument doc;
+  if (!leerJson(rutaEntrenamiento(id, ".json"), doc)) return false;
+  auto numero = [](JsonVariantConst v) -> float { return v.isNull() ? NAN : v.as<float>(); };
+  auto entero = [](JsonVariantConst v) -> int { return v.isNull() ? 0 : v.as<int>(); };
+
+  r = ResumenEntrenamiento();
+  r.estado         = String(doc["estado"] | "");
+  r.fin            = String(doc["fin"] | "");
+  r.ciclosObjetivo = doc["ciclos_objetivo"] | 0;
+  r.duracion_s     = numero(doc["duracion_s"]);
+
+  JsonVariantConst p = doc["resumen"]["promedios"];
+  JsonVariantConst m = doc["resumen"]["multiciclo"];
+  r.hayFeatures = !doc["resumen"].isNull();
+
+  r.ti_s           = numero(p["ti_s"]);
+  r.te_s           = numero(p["te_s"]);
+  r.pausa_s        = numero(p["pausa_s"]);
+  r.ti_ttot        = numero(p["ti_ttot"]);
+  r.pif_Lmin       = numero(p["pif_Lmin"]);
+  r.pef_Lmin       = numero(p["pef_Lmin"]);
+  r.volInsp_L      = numero(p["vol_insp_L"]);
+  r.volEsp_L       = numero(p["vol_esp_L"]);
+  r.pim_cmH2O      = numero(p["pim_cmH2O"]);
+  r.pem_cmH2O      = numero(p["pem_cmH2O"]);
+  r.trabajoInsp_J  = numero(p["trabajo_insp_J"]);
+  r.potenciaInsp_W = numero(p["potencia_insp_W"]);
+
+  r.nCiclos                = entero(m["n_ciclos_completos"]);
+  r.nFasesSueltas          = entero(m["n_fases_sueltas"]);
+  r.periodo_s              = numero(m["periodo_medio_s"]);
+  r.frecuencia_rpm         = numero(m["frecuencia_rpm"]);
+  r.ventilacionMinuto_Lmin = numero(m["ventilacion_minuto_Lmin"]);
+  r.trabajoTotalInsp_J     = numero(m["trabajo_total_insp_J"]);
+  r.pendientePim           = numero(m["pendiente_pim_por_ciclo"]);
+  r.caidaPim_pct           = numero(m["caida_pim_pct"]);
+  r.pifMax_Lmin            = numero(m["pif_max_Lmin"]);
+  r.pefMax_Lmin            = numero(m["pef_max_Lmin"]);
+  r.pimMax_cmH2O           = numero(m["pim_max_cmH2O"]);
+  r.pemMax_cmH2O           = numero(m["pem_max_cmH2O"]);
+  r.pifMaxCiclo            = entero(m["pif_max_ciclo"]);
+  r.pefMaxCiclo            = entero(m["pef_max_ciclo"]);
+  r.pimMaxCiclo            = entero(m["pim_max_ciclo"]);
+  r.pemMaxCiclo            = entero(m["pem_max_ciclo"]);
   return true;
 }
 
