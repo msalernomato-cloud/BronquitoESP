@@ -355,10 +355,48 @@ void BronquitoNetwork::confirmarFrecuencia(JsonVariantConst idFrecuencia) {
   llamarApi(servidorGuardado(), "POST", "/dispositivo/frecuencia/confirmar", enviar, confirmacion);
 }
 
+void BronquitoNetwork::confirmarResistencia(JsonVariantConst idResistencia) {
+  JsonDocument cuerpo;
+  cuerpo["id_resistencia"] = idResistencia;
+  String enviar;
+  serializeJson(cuerpo, enviar);
+  JsonDocument confirmacion;
+  llamarApi(servidorGuardado(), "POST", "/dispositivo/resistencia/confirmar", enviar, confirmacion);
+}
+
 // ---------------------------------------------------------------------------
 // PRUEBAS DE LA SD
 // ---------------------------------------------------------------------------
 // Una espirometría son ~25 KB: se le da más tiempo que al resto de los pedidos.
 int BronquitoNetwork::subirEvaluacion(const String& cuerpo, JsonDocument& resp) {
   return llamarApi(servidorGuardado(), "POST", "/dispositivo/evaluaciones", cuerpo, resp, 10000);
+}
+
+int BronquitoNetwork::subirEntrenamiento(const String& cuerpo, JsonDocument& resp) {
+  return llamarApi(servidorGuardado(), "POST", "/dispositivo/entrenamientos", cuerpo, resp, 10000);
+}
+
+// Como llamarApi(), pero el cuerpo sale de un Stream (el .csv abierto en la SD) en vez de un String
+int BronquitoNetwork::subirCsvEntrenamiento(const String& usuario, const String& archivo, Stream& csv, size_t tam,
+                                            JsonDocument& resp) {
+  resp.clear();
+  String ip = servidorGuardado();
+  if (!estaConectado() || ip.length() == 0) return SIN_RED;
+
+  String ruta = "/dispositivo/entrenamientos/csv?usuario=" + usuario + "&archivo=" + archivo;
+  HTTPClient http;
+  http.setConnectTimeout(3000);
+  http.setTimeout(30000);   // una sesión larga son cientos de KB
+  if (!http.begin("http://" + ip + ":" + String(PUERTO_SERVIDOR) + ruta)) return SIN_RED;
+  http.addHeader("X-Device-Key", CLAVE_DISPOSITIVO);
+  http.addHeader("Content-Type", "text/csv");
+
+  int codigo = http.sendRequest("POST", &csv, tam);
+  if (codigo > 0) {
+    String texto = http.getString();
+    if (texto.length() > 0) deserializeJson(resp, texto);
+  }
+  http.end();
+  Serial.printf("[NET] POST %s (%u bytes) -> %d\n", ruta.c_str(), (unsigned)tam, codigo);
+  return codigo;
 }

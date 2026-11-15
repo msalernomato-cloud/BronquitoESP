@@ -88,7 +88,9 @@ void FlujoConexion::mostrarEstado() {
 void FlujoConexion::ofrecerEnvio() {
   // Sin Wi-Fi o sin compu no se pregunta: las pruebas se suben en la próxima sincronización
   if (!net.estaConectado() || net.servidorGuardado().length() == 0 || !tarjeta.hayPaciente()) return;
-  int pendientes = tarjeta.listarPendientes(MAX_PRUEBAS_POR_SYNC).size();
+  // Evaluaciones y entrenamientos sin subir
+  int pendientes = tarjeta.listarPendientes(MAX_PRUEBAS_POR_SYNC).size() +
+                   tarjeta.listarEntrenamientosPendientes(MAX_PRUEBAS_POR_SYNC).size();
   if (pendientes == 0) return;
 
   bool una = (pendientes == 1);
@@ -164,10 +166,21 @@ int FlujoConexion::procesarSolicitudes() {
 // Devuelve cuántas subió. Si algo la frena lo muestra, y lo que falta queda para la próxima sincronización.
 int FlujoConexion::subirPendientes() {
   if (!tarjeta.hayPaciente()) return 0;   // sin perfil no se sabe de qué paciente son
-  std::vector<String> pendientes = tarjeta.listarPendientes(MAX_PRUEBAS_POR_SYNC);
   int subidas = 0;
+  bool cortar = false;   // error de conexión o de paciente: no tiene sentido seguir con las demás
 
-  for (size_t i = 0; i < pendientes.size(); i++) {
+  // Sin conexión, clave inválida o paciente no asignado: se avisa y se corta
+  auto errorGrave = [&](int http, JsonDocument &resp) {
+    String error = String(resp["error"] | "");
+    String motivo = (error == "usuario_no_asignado" || error == "sin_paciente_asignado")
+                      ? String("El paciente no está asignado en la web") : net.textoError(http);
+    ui.mostrarError("No se enviaron las pruebas", motivo);
+    cortar = true;
+  };
+
+  // ---- Evaluaciones: .json + .csv en un solo pedido ----
+  std::vector<String> pendientes = tarjeta.listarPendientes(MAX_PRUEBAS_POR_SYNC);
+  for (size_t i = 0; i < pendientes.size() && !cortar; i++) {
     ui.mostrarMensaje("Enviando pruebas a la web...", String(i + 1) + " de " + String(pendientes.size()));
     String cuerpo;
     if (!tarjeta.armarEnvio(pendientes[i], tarjeta.usuario(), cuerpo)) {
@@ -189,12 +202,44 @@ int FlujoConexion::subirPendientes() {
       continue;
     }
     if (http == 400) continue;   // a esa prueba le pasa algo: queda pendiente y se sigue con las demás
+    errorGrave(http, resp);
+  }
 
-    // Sin conexión, clave inválida o paciente no asignado: no tiene sentido seguir con las demás
-    String motivo = (error == "usuario_no_asignado" || error == "sin_paciente_asignado")
-                      ? String("El paciente no está asignado en la web") : net.textoError(http);
-    ui.mostrarError("No se enviaron las pruebas", motivo);
-    break;
+  // ---- Entrenamientos: primero el .json y después el .csv (leído de la SD, no entra en RAM).
+  //      Queda subido recién cuando la web recibió los dos. ----
+  std::vector<String> entrenamientos;
+  if (!cortar) entrenamientos = tarjeta.listarEntrenamientosPendientes(MAX_PRUEBAS_POR_SYNC);
+  for (size_t i = 0; i < entrenamientos.size() && !cortar; i++) {
+    const String &id = entrenamientos[i];
+    ui.mostrarMensaje("Enviando entrenamientos...", String(i + 1) + " de " + String(entrenamientos.size()));
+    String cuerpo;
+    if (!tarjeta.armarEnvioEntrenamiento(id, tarjeta.usuario(), cuerpo)) {
+      Serial.println("[SUBIDA] No se pudo leer " + id + " (queda pendiente)");
+      continue;
+    }
+    JsonDocument resp;
+    int http = net.subirEntrenamiento(cuerpo, resp);
+    cuerpo = String();
+    Serial.printf("[SUBIDA] %s (.json) -> HTTP %d %s%s\n", id.c_str(), http, String(resp["estado"] | "").c_str(),
+                  String(resp["error"] | "").c_str());
+    if (http == 400) continue;
+    if (http != 200) { errorGrave(http, resp); break; }
+
+    File csv = tarjeta.abrirCsvEntrenamiento(id);
+    if (csv) {
+      size_t tam = csv.size();
+      http = net.subirCsvEntrenamiento(tarjeta.usuario(), id, csv, tam, resp);
+      csv.close();
+      Serial.printf("[SUBIDA] %s (.csv) -> HTTP %d %s\n", id.c_str(), http, String(resp["error"] | "").c_str());
+      if (http == 400) continue;   // queda pendiente: en la próxima se mandan los dos de nuevo
+      if (http != 200) { errorGrave(http, resp); break; }
+    } else {
+      Serial.println("[SUBIDA] " + id + " no tiene .csv: se sube solo el .json");
+    }
+
+    subidas++;
+    if (!tarjeta.marcarEntrenamientoSincronizado(id))
+      Serial.println("[SUBIDA] No se pudo marcar " + id + " como sincronizado");
   }
   return subidas;
 }

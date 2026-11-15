@@ -862,7 +862,9 @@ void BronquitoUI::mostrarConfiguracion(int sesiones, const bool *dias, const Str
     // Vencimiento
     String linea;
     uint16_t color = COLOR_TEXTO_GRIS;
-    if (res.vence.length() != 10) {
+    if (res.sinVencimiento) {
+      linea = "Sin vencimiento";
+    } else if (res.vence.length() != 10) {
       linea = "Sin fecha de vencimiento";
       color = BRONQUITO_ORANGE;
     } else if (!res.hayFechaHoy) {

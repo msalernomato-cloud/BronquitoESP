@@ -164,10 +164,12 @@ void FlujoHistorial::verEntrenamiento(const String &id, const String &fecha) {
   porPagina[0] = n - k0;
 
   k0 = n;   // Presiones
-  m[n++] = metrica("PIM promedio", texto(r.pim_cmH2O, 1), "cmH2O");
-  m[n++] = metricaTexto(conCiclo("PIM máxima", r.pimMaxCiclo), texto(r.pimMax_cmH2O, 1), "cmH2O");
-  m[n++] = metrica("PEM promedio", texto(r.pem_cmH2O, 1), "cmH2O");
-  m[n++] = metricaTexto(conCiclo("PEM máxima", r.pemMaxCiclo), texto(r.pemMax_cmH2O, 1), "cmH2O");
+  // En el .json la placa da PIM > 0 y PEM < 0; al usuario se le muestran por convención:
+  // PIM negativa (inspiración) y PEM positiva (espiración). Solo cambia lo que se ve.
+  m[n++] = metrica("PIM promedio", texto(-r.pim_cmH2O, 1), "cmH2O");
+  m[n++] = metricaTexto(conCiclo("PIM máxima", r.pimMaxCiclo), texto(-r.pimMax_cmH2O, 1), "cmH2O");
+  m[n++] = metrica("PEM promedio", texto(-r.pem_cmH2O, 1), "cmH2O");
+  m[n++] = metricaTexto(conCiclo("PEM máxima", r.pemMaxCiclo), texto(-r.pemMax_cmH2O, 1), "cmH2O");
   m[n++] = metrica("Caída de la PIM", texto(r.caidaPim_pct, 1), "%");
   m[n++] = metrica("Pendiente de la PIM (por ciclo)", texto(r.pendientePim, 1), "cmH2O");
   porPagina[1] = n - k0;

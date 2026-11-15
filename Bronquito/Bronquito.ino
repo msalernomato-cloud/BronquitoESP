@@ -12,6 +12,7 @@
 #include "FlujoCalibracion.h"
 #include "FlujoHistorial.h"
 #include "FlujoEntrenamiento.h"
+#include "ValvulaActiva.h"
 #include "EspacioSD.h"
 
 // ---------------------------------------------------------------------------
@@ -21,6 +22,7 @@ BronquitoUI ui;
 TarjetaSD tarjeta(19, 22, 23, 21);     // microSD: CS, SCK, MISO, MOSI
 BronquitoNetwork net;
 RespiratorySensors sensoresResp(36, 39);
+ValvulaActiva valvula;                 // servo GPIO5: PWM SOLO durante el entrenamiento
 
 const int DHT_PIN = 27;                // DHT22 (temperatura y humedad para la corrección BTPS). En la placa: pin 1 del conector del DFPlayer (J2). En el GPIO2 no leía por el LED de la ESP32
 BTPSSensor btps(DHT_PIN, DHT22);
@@ -39,7 +41,7 @@ FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
 FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
 FlujoHistorial   historial(ui, tarjeta);
 FlujoConfiguracion configuracion(ui, tarjeta, net, reloj);
-FlujoEntrenamiento entrenamiento(ui, sensoresResp, tarjeta, reloj);
+FlujoEntrenamiento entrenamiento(ui, sensoresResp, valvula, tarjeta, reloj, btps);
 EspacioSD        espacioSD(ui, tarjeta, conexion, estadoActual);
 
 void leerComandosSerie() {
@@ -143,7 +145,13 @@ void loop() {
 
     case EVENTO_ENTRENAMIENTO:
       Serial.println("[FSM] Opción: ENTRENAMIENTO MUSCULAR");
+      configuracion.actualizarDesdeWeb();   // si hay conexión: modo y nivel del médico, y predichos al día
       entrenamiento.ejecutar();
+      conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se sube en la próxima
+      if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
+        sesion.redibujarPantallaActual();
+        break;
+      }
       estadoActual = ESTADO_MENU_PRINCIPAL;
       ui.drawMainMenu();
       break;
@@ -183,6 +191,7 @@ void loop() {
         break;
       }
       calibracion.ejecutar();
+      tarjeta.actualizarResistenciaAuto();   // una evaluación válida renueva la vigencia y recalcula el nivel
       conexion.ofrecerEnvio();   // "¿Enviar a la web?": si acepta sincroniza; si no, se suben en la próxima
       if (estadoActual == ESTADO_INICIO_SESION) {   // al sincronizar aceptó un pedido de formatear: ya quedó en el login
         sesion.redibujarPantallaActual();

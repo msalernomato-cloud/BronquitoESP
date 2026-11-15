@@ -9,7 +9,7 @@
 #include "Reloj.h"
 
 // Opción "Configuración" del menú: muestra la frecuencia de entrenamiento que indicó el médico y el
-// nivel de resistencia (con su vencimiento) que está guardado en /CONFIGURACION.JSON.
+// nivel de resistencia (manual del médico, o el automático con su vencimiento) de /CONFIGURACION.JSON.
 // Si hay conexión con la computadora, primero baja la última de la web y la guarda en la tarjeta.
 class FlujoConfiguracion {
 public:
@@ -17,13 +17,17 @@ public:
 
   void ejecutar();   // vuelve cuando el usuario sale de la pantalla
 
+  // Si hay conexión, baja de la web la frecuencia, la resistencia que fijó el médico y los predichos,
+  // y los guarda en /CONFIGURACION.JSON. true si bajó una frecuencia nueva. Se llama al entrar a
+  // Configuración y antes de cada entrenamiento.
+  bool actualizarDesdeWeb();
+
 private:
   BronquitoUI &ui;
   TarjetaSD &tarjeta;
   BronquitoNetwork &net;
   Reloj &reloj;
 
-  bool actualizarFrecuencia();   // true si bajó una frecuencia nueva de la web
 };
 
 #endif

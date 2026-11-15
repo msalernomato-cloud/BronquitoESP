@@ -18,6 +18,13 @@
 // (el equipo también saca ese signo de la presión, muestra por muestra, así que no agrega nada).
 // Además se descartan las fases con menos de VOL_MIN_FASE_L (el Python no lo hace).
 //
+// K de cada fase y BTPS (como la evaluación): el flujo del equipo es K·√|ΔV| con la K que tocó a CADA
+// MUESTRA según el signo de la presión en ese instante (Kesp si salió > 0, Kinsp si salió < 0). Como
+// Kinsp ≠ Kesp, una muestra con el sentido equivocado sale ×1,67 o ÷1,67. Con ConversionFlujo se recupera
+// √|ΔV| = |Q| / K_muestra y se vuelve a multiplicar por la K de la FASE completa y por el factor BTPS.
+// Se usa para los volúmenes del contador en vivo y para todas las features de flujo y volumen. Los
+// umbrales de flujo (40/10 L/min) siguen sobre el flujo del equipo, como en el Python.
+//
 // Convenciones (placa actual): presión > 0 = INSPIRACIÓN; flujo del equipo < 0 = inspiración.
 // Flujos y volúmenes de las features en magnitud. PIM positiva, PEM negativa (respecto del reposo).
 // Lo que no se puede calcular queda en NAN (en el .json va como null, nunca 0).
@@ -66,6 +73,23 @@ const int    MAX_MUESTRAS_TRAMO    = 2000;       // 20 s seguidos con flujo: se 
 const float ESCALA_PRESION = 10.0f;     // 0,1 cmH2O
 const float ESCALA_FLUJO   = 10.0f;     // 0,1 L/min
 const float ESCALA_V       = 10000.0f;  // 0,1 mV (el CSV tiene 4 decimales: es exacto)
+
+// =============================================================================
+// Conversión del flujo: K de cada sentido (las de RespiratorySensors) y factor BTPS
+// =============================================================================
+// Con los valores por defecto (todo 1) no se cambia nada: el flujo queda como lo dio el equipo.
+struct ConversionFlujo {
+  float kEspiracion  = 1.0f;   // RespiratorySensors::getKEspiracion()
+  float kInspiracion = 1.0f;   // RespiratorySensors::getKInspiracion()
+  float factorBTPS   = 1.0f;   // BTPSSensor::getBTPSFactor() (1 = sin corregir)
+
+  // Magnitud del flujo con la K de 'fase' (INSPIRACION | ESPIRACION) y BTPS, a partir del flujo del equipo
+  float magnitud(float flujoEquipo_Lmin, int fase) const {
+    float kMuestra = (flujoEquipo_Lmin < 0.0f) ? kInspiracion : kEspiracion;   // la que usó el equipo
+    float kFase    = (fase == INSPIRACION) ? kInspiracion : kEspiracion;
+    return fabsf(flujoEquipo_Lmin) / kMuestra * kFase * factorBTPS;
+  }
+};
 
 // =============================================================================
 // Señal completa de una sesión (leída del CSV de la SD)
@@ -192,8 +216,13 @@ inline void reposoYRuido(const std::vector<int16_t> &x, float &centro, float &si
 // Memoria: solo el tramo en curso (como mucho MAX_MUESTRAS_TRAMO muestras).
 class ContadorCiclos {
 public:
+  // K de cada fase y BTPS para el volumen de las fases (se mantiene al reiniciar)
+  void configurar(const ConversionFlujo &c) { conv = c; }
+
   void reiniciar() {
+    ConversionFlujo c = conv;
     *this = ContadorCiclos();
+    conv = c;
   }
 
   // true si con esta muestra se completó un ciclo
@@ -208,7 +237,7 @@ public:
     if (mag > UMBRAL_BAJO_LMIN) {
       if (!enTramo) { enTramo = true; superoAlto = false; limpiarTramo(); }
       if (mag > UMBRAL_ALTO_LMIN) superoAlto = true;
-      agregarAlTramo(t, mag, pr - base);
+      agregarAlTramo(t, mag, pr - base, flujo_Lmin);
       if (superoAlto) evaluarValles(false);   // un tramo que nunca pasa 40 L/min no es una fase
       if ((int)tt.size() >= MAX_MUESTRAS_TRAMO) cerrarTramo();
     } else {
@@ -233,6 +262,8 @@ public:
   float segundosSinFlujo() const { return (float)(tActual - tUltimoFlujo); }
 
 private:
+  ConversionFlujo conv;
+
   // Reposo de la presión (orientada: > 0 = inspiración)
   float base = 0.0f;
 
@@ -240,6 +271,7 @@ private:
   bool enTramo = false, superoAlto = false;
   std::vector<double> tt;
   std::vector<float> mg;
+  std::vector<float> fq;             // flujo del equipo con su signo (para recalcular con la K de la fase)
   std::vector<double> sW;            // prefijo (tamaño = muestras + 1)
   int inicioPieza = 0;               // primera muestra del pedazo abierto
   int proxValle = 1;                 // próximo candidato a valle por evaluar
@@ -258,15 +290,16 @@ private:
   double tActual = 0.0, tUltimoFlujo = 0.0;
 
   void limpiarTramo() {
-    tt.clear(); mg.clear();
+    tt.clear(); mg.clear(); fq.clear();
     sW.assign(1, 0.0);
     inicioPieza = 0;
     proxValle = 1;
   }
 
-  void agregarAlTramo(double t, float mag, float pf) {
+  void agregarAlTramo(double t, float mag, float pf, float flujo) {
     tt.push_back(t);
     mg.push_back(mag);
+    fq.push_back(flujo);
     sW.push_back(sW.back() + (double)pf * mag);
   }
 
@@ -318,17 +351,18 @@ private:
   // Sentido por la presión pesada por |flujo| (siempre por presión: ver el comentario del principio)
   static int sentido(double w) { return (w > 0) ? INSPIRACION : ESPIRACION; }
 
-  // Volumen de un pedazo [a, z] (trapecios de |flujo|, en L)
-  double volumenPieza(int a, int z) const {
+  // Volumen de un pedazo [a, z] de sentido f (trapecios de |flujo| con la K de f y BTPS, en L)
+  double volumenPieza(int a, int z, int f) const {
     double v = 0.0;
-    for (int k = a + 1; k <= z; k++) v += 0.5 * (mg[k] + mg[k - 1]) / 60.0 * (tt[k] - tt[k - 1]);
+    for (int k = a + 1; k <= z; k++)
+      v += 0.5 * (conv.magnitud(fq[k], f) + conv.magnitud(fq[k - 1], f)) / 60.0 * (tt[k] - tt[k - 1]);
     return v;
   }
 
   // Sentido de un pedazo [a, z] y unión con la fase en armado
   void cerrarPieza(int a, int z) {
     int f = sentido(sW[z + 1] - sW[a]);
-    double vol = volumenPieza(a, z);
+    double vol = volumenPieza(a, z, f);
 
     if (hayFase && faseSentido == f && tt[a] - faseFin <= HUECO_UNION_S) {
       faseFin = tt[z];
@@ -410,7 +444,12 @@ inline int repararCaidas(SenalEntrenamiento &s) {
 }  // namespace detalle
 
 // Analiza la señal completa. Repara el flujo en la propia señal y libera vFlujo (ya no hace falta).
-inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
+// conv: K de cada fase y BTPS para todas las features de flujo y volumen (por defecto, sin cambios).
+// flujoProc (opcional): si no es null, al terminar se deja ahí el flujo procesado de cada muestra (signo y
+// K de la fase, BTPS y Hampel), en L/min * ESCALA_FLUJO y con el signo del equipo (negativo = inspiración).
+inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
+                     const ConversionFlujo &conv = ConversionFlujo(),
+                     std::vector<int16_t> *flujoProc = nullptr) {
   using namespace detalle;
   out = FeaturesEntrenamiento();
   const int n = (int)s.size();
@@ -498,10 +537,12 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
   std::vector<int8_t> fase(n, REPOSO);
   for (auto &fs : fases) for (int k = fs.a; k <= fs.z; k++) fase[k] = (int8_t)fs.f;
 
-  // ---- Flujo limpio: signo de la fase + Hampel ----
+  // ---- Flujo limpio: signo y K de la fase, BTPS + Hampel ----
   auto corregido = [&](int k) {
     float q = Q(k);
-    return fase[k] == INSPIRACION ? -fabsf(q) : fase[k] == ESPIRACION ? fabsf(q) : q;
+    if (fase[k] == INSPIRACION) return -conv.magnitud(q, INSPIRACION);
+    if (fase[k] == ESPIRACION)  return  conv.magnitud(q, ESPIRACION);
+    return q * conv.factorBTPS;   // reposo: sin fase, solo BTPS
   };
   std::vector<int16_t> limpio(n);
   {
@@ -614,12 +655,13 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
     for (int i = 0; i < nc; i++) { num += (i + 1 - xm) * (C[i].pim_cmH2O - ym); den += (i + 1 - xm) * (i + 1 - xm); }
     out.pendiente_pim_por_ciclo = (float)(num / den);
 
-    // Caída de la PIM: último tercio contra el primero
+    // Caída de la PIM: último tercio contra el primero. POSITIVA = la PIM cayó (fatiga), negativa = subió.
+    // (Distinto del Python, que da (último - primero) / primero: el signo está invertido a propósito.)
     int k = std::max(1, nc / 3);
     double pri = 0, ult = 0;
     for (int i = 0; i < k; i++) { pri += C[i].pim_cmH2O; ult += C[nc - k + i].pim_cmH2O; }
     pri /= k; ult /= k;
-    if (pri != 0) out.caida_pim_pct = (float)((ult - pri) / pri * 100.0);
+    if (pri != 0) out.caida_pim_pct = (float)((pri - ult) / pri * 100.0);
   }
 
   if (nc > 0) {
@@ -635,6 +677,7 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out) {
     out.pim_max_cmH2O = C[iPim].pim_cmH2O; out.pim_max_ciclo = iPim + 1;
     out.pem_max_cmH2O = C[iPem].pem_cmH2O; out.pem_max_ciclo = iPem + 1;
   }
+  if (flujoProc) flujoProc->swap(limpio);
   return true;
 }
 

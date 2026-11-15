@@ -1,53 +1,72 @@
 #include "FlujoConfiguracion.h"
+#include "NivelResistencia.h"
 
 FlujoConfiguracion::FlujoConfiguracion(BronquitoUI &ui, TarjetaSD &tarjeta, BronquitoNetwork &net, Reloj &reloj)
   : ui(ui), tarjeta(tarjeta), net(net), reloj(reloj) {}
 
-// Días desde el 1/1/1970 para una fecha "AAAA-MM-DD" (algoritmo de días civiles). -1 si no tiene ese formato
-static long diaDelCalendario(const String &f) {
-  if (f.length() < 10 || f[4] != '-' || f[7] != '-') return -1;
-  int a = f.substring(0, 4).toInt(), m = f.substring(5, 7).toInt(), d = f.substring(8, 10).toInt();
-  if (a < 2000 || m < 1 || m > 12 || d < 1 || d > 31) return -1;
-  a -= (m <= 2);
-  long era = a / 400;
-  long anioEra = a - era * 400;
-  long diaAnio = (153L * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-  long diaEra = anioEra * 365 + anioEra / 4 - anioEra / 100 + diaAnio;
-  return era * 146097 + diaEra - 719468;
-}
-
 void FlujoConfiguracion::ejecutar() {
-  bool actualizada = actualizarFrecuencia();
+  bool actualizada = actualizarDesdeWeb();
   FrecuenciaGuardada f = tarjeta.leerFrecuencia();
 
-  ResistenciaGuardada r = tarjeta.leerResistencia();
+  EstadoResistencia e = tarjeta.estadoResistencia(reloj.fechaHoraActual());
   InfoResistencia info;
-  info.nivel = r.nivel;
-  info.vigenciaDias = r.vigenciaDias;
-  info.vence = r.vence;
-  info.fijadoPorMedico = r.fijadoPorMedico;
-  long hoy = diaDelCalendario(reloj.fechaHoraActual());   // "AAAA-MM-DD HH:MM:SS" o "sin hora"
-  long vence = diaDelCalendario(r.vence);
-  info.hayFechaHoy = (hoy >= 0 && vence >= 0);
-  if (info.hayFechaHoy) info.diasRestantes = (int)(vence - hoy);
+  info.nivel = e.nivel;
+  info.fijadoPorMedico = e.manual;
+  info.sinVencimiento = e.manual;
+  info.vigenciaDias = e.vigenciaDias;
+  info.vence = e.vence;
+  info.hayFechaHoy = e.hayFechaHoy;
+  info.diasRestantes = e.diasRestantes;
 
   ui.mostrarConfiguracion(f.sesiones, f.dias, f.vigenteDesde, actualizada, info);
 }
 
-bool FlujoConfiguracion::actualizarFrecuencia() {
+// GET /dispositivo/frecuencia trae tres cosas independientes; cada una se guarda (y se confirma) sola:
+//   "frecuencia"       -> clave "frecuencia" de CONFIGURACION.JSON, confirma con su id
+//   "resistencia_web"  -> clave "resistencia_web", confirma con su id
+//   "predichos"        -> clave "predichos"; si cambiaron, se recalcula el nivel automático
+bool FlujoConfiguracion::actualizarDesdeWeb() {
   if (!net.estaConectado() || net.servidorGuardado().length() == 0 || !tarjeta.hayPaciente()) return false;
 
-  ui.mostrarMensaje("Actualizando frecuencia...");
+  ui.mostrarMensaje("Actualizando configuración...");
   JsonDocument resp;
   int http = net.pedirFrecuencia(tarjeta.usuario(), resp);
   if (http != 200) return false;
 
+  bool frecuenciaNueva = false;
   JsonObject f = resp["frecuencia"];
-  if (f.isNull()) return false;
-  if (!tarjeta.guardarFrecuencia(f)) {
-    Serial.println("[FREC] No se pudo guardar en la SD");
-    return false;
+  if (!f.isNull()) {
+    if (tarjeta.guardarFrecuencia(f)) {
+      net.confirmarFrecuencia(f["id"]);
+      frecuenciaNueva = true;
+    } else {
+      Serial.println("[CONFIG] No se pudo guardar la frecuencia en la SD");
+    }
   }
-  net.confirmarFrecuencia(f["id"]);
-  return true;
+
+  JsonObject r = resp["resistencia_web"];
+  if (!r.isNull()) {
+    if (tarjeta.guardarResistenciaWeb(r)) net.confirmarResistencia(r["id"]);
+    else Serial.println("[CONFIG] No se pudo guardar la resistencia en la SD");
+  }
+
+  JsonVariant p = resp["predichos"];
+  if (p.is<JsonObject>()) {
+    Predichos antes = tarjeta.leerPredichos();
+    auto igual = [](float a, JsonVariant v) {
+      float b = v.isNull() ? NAN : v.as<float>();
+      if (!(b > 0.0f)) b = NAN;
+      return (isnan(a) && isnan(b)) || fabsf(a - b) < 0.005f;
+    };
+    bool cambiaron = !igual(antes.fvc_L, p["fvc_predicha_L"]) || !igual(antes.pim_cmH2O, p["pim_predicha_cmh2o"]);
+    if (cambiaron) {
+      if (tarjeta.guardarPredichos(p)) {
+        Serial.println("[CONFIG] Predichos nuevos: se recalcula el nivel automático");
+        tarjeta.actualizarResistenciaAuto();
+      } else {
+        Serial.println("[CONFIG] No se pudieron guardar los predichos en la SD");
+      }
+    }
+  }
+  return frecuenciaNueva;
 }

@@ -52,6 +52,7 @@ struct InfoResistencia {
   int vigenciaDias = 0;
   String vence;                  // "AAAA-MM-DD"
   bool fijadoPorMedico = false;
+  bool sinVencimiento = false;   // modo manual: el nivel lo fijó el médico y no vence
   bool hayFechaHoy = false;      // false = el reloj no tiene hora: no se puede saber si venció
   int diasRestantes = 0;         // hasta "vence" (negativo = ya venció); vale solo si hayFechaHoy
 };
