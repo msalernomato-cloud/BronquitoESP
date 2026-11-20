@@ -113,19 +113,27 @@ private:
   const float K_INSPIRACION    = K_CIERRE_INSP * K_TEORICA;   // ≈ 578 L/min/sqrt(V)
 
   // Canal de presión (GPIO39): PSA071040 -> INA128 (U3), salida SIN amplificar (MAN2, conector J7)
-  //   INA128: G = 1 + 50k / RG,  RG = R8 = 3,9k -> 13,82
+  //   INA128: G = 1 + 50k / RG,  RG = 1k (medida en la placa) -> 51
+  //   (antes figuraba RG = 3,9k -> 13,82, que daba K = 421: inflaba las presiones 3,5 veces)
   //   (la salida amplificada, con el no inversor U1B x3,7 -> G = 51,14 y K = 113,88, queda en J3 por si
   //    hace falta más resolución: en ese caso usar GANANCIA_PIM = G_INA_PIM * 3,7f)
-  //   P [cmH2O] = Vneto * 10,19716 / (G * 1,7511 mV/kPa)
-  // Mide la PIM y, en la espirometría, dice el sentido del flujo. Con la placa actual la presión da
-  // POSITIVA al inspirar y NEGATIVA al espirar (ver AnalisisEspiro::SIGNO_PRESION_ESPIRACION).
-  const float RG_INA_PIM_OHM = 3900.0f;
-  const float GANANCIA_PIM   = 1.0f + 50000.0f / RG_INA_PIM_OHM;      // 13,82
+  //   P [cmH2O] = Vneto * 10,19716 / (G * 1,7511 mV/kPa)  -> teórica con G = 51: ≈ 114 cmH2O/V
+  // Mide la PIM y, en la espirometría, dice el sentido del flujo.
+  const float RG_INA_PIM_OHM = 1000.0f;
+  const float GANANCIA_PIM   = 1.0f + 50000.0f / RG_INA_PIM_OHM;      // 51
   const float SENS_PSA_V_KPA = 0.0017511f;                            // 1,7511 mV/kPa (hoja de datos)
-  const float K_PIM          = 10.19716f / (GANANCIA_PIM * SENS_PSA_V_KPA);   // ≈ 421,35 cmH2O/V
-  // La presión se guarda tal como la mide el sensor (positiva al inspirar). No cambiar este signo para
-  // arreglar el sentido: eso se ajusta con AnalisisEspiro::SIGNO_PRESION_ESPIRACION.
-  const float SIGNO_PRESION  = 1.0f;
+  // K CALIBRADA con manómetro de tensiómetro (20 nov 2026): presiones de 20 a 120 mmHg, promedio de
+  // las series 3 y 4 (programa CalibracionPIM): P = 120,15 * dV + 5,0 (R² = 0,9998, residuo máx 1,1
+  // cmH2O). El +5 es el corrimiento del cero del manómetro: no se usa (la tara pone el cero).
+  // Verificada con presión positiva hasta 163 cmH2O; del lado del vacío (PIM) es la misma recta,
+  // confiable hasta ≈ 106 cmH2O (2,45 V en el GPIO39, límite lineal del ADC de la ESP32).
+  // (La teórica, 10,19716 / (GANANCIA_PIM * SENS_PSA_V_KPA) ≈ 114, difiere un 5%: tolerancia del sensor.)
+  const float K_PIM          = 120.15f;                               // cmH2O/V (calibrada)
+  // Convención física: presión NEGATIVA al inspirar (vacío en la boca) y POSITIVA al espirar.
+  // Las tomas del sensor quedaron al revés en la placa (la tensión sube al inspirar), así que se
+  // invierte acá. La PIM se informa igual como valor positivo (AnalisisPIM trabaja con la magnitud).
+  // Si se cambia este signo, cambiar también AnalisisEspiro::SIGNO_PRESION_ESPIRACION.
+  const float SIGNO_PRESION  = -1.0f;
 
   const float ZONA_MUERTA_V = 0.002f;
   const float UMBRAL_FASE   = 0.2f;

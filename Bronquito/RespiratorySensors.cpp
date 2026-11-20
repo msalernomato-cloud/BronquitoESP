@@ -214,8 +214,8 @@ MuestraEspiro RespiratorySensors::procesarMuestra(float vFlujoBruto, float vPIMB
     }
 
     // Sentido del flujo: lo da el sensor de presión, en CADA muestra (así se ve el paso de la
-    // espiración a la inspiración aunque no haya una pausa). Con la placa actual la presión es
-    // NEGATIVA al espirar y POSITIVA al inspirar; dP se multiplica por SIGNO_PRESION_ESPIRACION para
+    // espiración a la inspiración aunque no haya una pausa). La presión es POSITIVA al espirar y
+    // NEGATIVA al inspirar (SIGNO_PRESION ya la invirtió); dP se multiplica por SIGNO_PRESION_ESPIRACION para
     // que dP > 0 sea espiración. Si la presión está cerca de cero se mantiene el sentido anterior.
     // (Esto es solo para ver en vivo: el análisis decide el sentido de nuevo, por evento.)
     if (!USAR_PIM) {   // sin el sensor de presión no se conoce el sentido: se asume espiración

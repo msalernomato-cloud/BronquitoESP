@@ -7,7 +7,7 @@
 // El sensor es un venturi: la garganta siempre tiene menos presión que la entrada, venga el aire
 // de un lado o del otro. dV = vFlujo_V - vZero es positivo tanto al soplar como al inspirar, así que
 // NO indica el sentido del flujo. El sentido lo da el sensor de presión de la boquilla (con la placa
-// actual: presión positiva = inspiración, negativa = espiración; ver SIGNO_PRESION_ESPIRACION).
+// actual: presión negativa = inspiración, positiva = espiración; ver SIGNO_PRESION_ESPIRACION).
 // Se decide por EVENTO (todo el tramo con flujo toma el
 // signo del promedio de la presión), así el ruido de la presión no lo cambia a mitad de un soplido.
 //
@@ -91,18 +91,22 @@ struct EventoEspiratorio {
 };
 
 namespace AnalisisEspiro {
-  // ---- MODO PRUEBA ----
-  // false = sin validaciones: no se rechaza ninguna maniobra (no hay E1, E2, E5 por pico bajo, E6, E7
-  // ni E8) y la inspiración se busca sin el límite de 3 s. Fuera de la espiración y de la inspiración
-  // el flujo queda en cero (no se ve el ruido). Poner en true para volver a validar.
-  const bool  VALIDAR         = false;
+  // ---- VALIDACIONES ----
+  // true = se validan E1, E2, E5, E6, E7 y E8 (E3 no está implementada). false = modo prueba: no se
+  // rechaza ninguna maniobra. Fuera de la espiración y de la inspiración el flujo queda en cero.
+  const bool  VALIDAR         = true;
+  // Límite de INSP_DEMORA_MAX_S entre el fin de la espiración y el comienzo de la inspiración.
+  // APAGADO (20/11/2026): el fin de la espiración se toma donde el flujo se pierde en el ruido, que en
+  // soplidos largos queda varios segundos antes del final real, y descartaba inspiraciones válidas
+  // (79 % de las maniobras de la base de prueba). No se usa hasta medir la demora de otra forma.
+  const bool  VALIDAR_DEMORA_INSP = false;
 
   // ---- SENTIDO DE LA PRESIÓN ----
-  // Signo que tiene la presión de la boquilla al ESPIRAR. En la placa actual las tomas del sensor de
-  // presión quedaron ruteadas al revés: la presión manométrica da POSITIVA al inspirar (la PIM sale
-  // positiva) y NEGATIVA al espirar. Convención: presión > 0 = inspiración, presión < 0 = espiración.
-  // Si se corrige la placa, poner +1. (RespiratorySensors usa esta misma constante.)
-  const float SIGNO_PRESION_ESPIRACION = -1.0f;
+  // Signo que tiene la presión de la boquilla al ESPIRAR. Desde el 20/11/2026 RespiratorySensors invierte
+  // la señal (SIGNO_PRESION = -1) para usar la convención física: presión POSITIVA al espirar y NEGATIVA
+  // al inspirar (vacío). Por eso acá va +1. Si se cambia SIGNO_PRESION, cambiar también este signo.
+  // (RespiratorySensors usa esta misma constante.)
+  const float SIGNO_PRESION_ESPIRACION = 1.0f;
 
   const float PICO_MIN_LMIN   = 120.0f;  // E5: PEF mínimo para considerar que hubo un soplido
   const float N_SIGMA         = 3.0f;    // umbral de inicio/fin = N_SIGMA * ruido
@@ -411,7 +415,7 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
       float tUlt = tFin;
       for (int k2 = segIni[e] - 1; k2 > fin; k2--)
         if (signo[k2] > 0 && fabsf(d[k2]) > umbral) { tUlt = b[k2].tiempo_s; break; }
-      if (VALIDAR && b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
+      if (VALIDAR && VALIDAR_DEMORA_INSP && b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
       float pico = 0.0f;
       for (int k2 = segIni[e]; k2 <= segFin[e]; k2++) pico = std::max(pico, si(k2));
       if (pico > mejorPico) { mejorPico = pico; elegido = (int)e; }

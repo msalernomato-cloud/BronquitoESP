@@ -92,7 +92,7 @@ void FlujoCalibracion::calibracionCancelada(const String &calibId) {
   tarjeta.borrarTemporalesPIM();
   if (calibId.length() > 0) tarjeta.borrarCalibracion(calibId);
   Serial.println("[CAL] Cancelada: no se guarda nada");
-  ui.mostrarMensaje("Calibración cancelada", "No se guardó nada", COLOR_ROJO_DEL);
+  ui.mostrarMensaje("Evaluación cancelada", "No se guardó nada", COLOR_ROJO_DEL);
   delay(1500);
 }
 
@@ -261,7 +261,7 @@ void FlujoCalibracion::ejecutar() {
                                           "Terminar", "Repetir", COLOR_TEXTO_GRIS, BRONQUITO_CYAN);
       if (repetir) continue;
       Serial.printf("[CAL] Terminada con la espirometría inválida (E%d)\n", evEsp.codigo);
-      ui.mostrarMensaje("Calibración guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
+      ui.mostrarMensaje("Evaluación guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
       delay(1800);
       return;
     }
@@ -289,6 +289,6 @@ void FlujoCalibracion::ejecutar() {
     return;
   }
 
-  ui.mostrarMensaje("¡Calibración guardada!", HACER_PIM ? "PIM y espirometría" : "Espirometría", COLOR_VERDE_OK);
+  ui.mostrarMensaje("¡Evaluación guardada!", HACER_PIM ? "PIM y espirometría" : "Espirometría", COLOR_VERDE_OK);
   delay(1500);
 }
