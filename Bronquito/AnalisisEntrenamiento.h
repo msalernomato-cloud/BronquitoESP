@@ -7,23 +7,27 @@
 // Es el port de deteccion_respiracion.py + features_respiracion.py (la referencia). Dos partes:
 //
 //   1. ContadorCiclos: DURANTE la medición. Solo cuenta ciclos completos (para cortar al llegar al
-//      objetivo). Recibe las muestras de a una y aplica la misma lógica que el Python, pero con el
-//      nivel de reposo de la presión estimado en vivo (no se conoce la captura entera).
-//   2. analizar(): DESPUÉS de guardar. Con la señal completa leída de la SD hace lo del Python
-//      (reposo de toda la captura, reparación de caídas, valles, Hampel) y calcula las features de
-//      cada ciclo y el resumen.
+//      objetivo). Mismo principio que analizar() (fases por presión), con las muestras de a una.
+//   2. analizar(): DESPUÉS de guardar. Con la señal completa leída de la SD detecta las fases POR PRESIÓN
+//      (METODO = "presion" del Python):
+//        - cero de la presión: mediana de la ventana de reposo inicial (0,2-1,0 s) o, si no fue reposo,
+//          de toda la captura;
+//        - tramos de signo constante de la presión (P > 0 = inspiración); un tramo es fase si su pico de |P|
+//          pasa P_BANDA_CMH2O, su impulso ∫|P| dt pasa IMPULSO_MIN y mueve al menos VOL_MIN_L;
+//        - unión de fases del mismo sentido con poco reposo entre ellas y bordes según haya pausa o no.
+//      Después: flujo limpio (signo y K de la fase, BTPS, rachas invertidas interpoladas y Hampel por fase)
+//      y las features de cada ciclo y el resumen.
 //
-// Diferencia con el Python: el sentido de cada fase sale SIEMPRE de la presión (signo de la presión
-// pesada por |flujo|). No hay umbral de ruido ni se usa el signo del flujo del equipo como alternativa
-// (el equipo también saca ese signo de la presión, muestra por muestra, así que no agrega nada).
-// Además se descartan las fases con menos de VOL_MIN_FASE_L (el Python no lo hace).
+// Diferencia con el Python: el volumen mínimo de cada tramo se mide con el flujo corregido (K de la fase y
+// BTPS); el Python usa el flujo del equipo. Validado contra el Python (sin K) en las señales de prueba:
+// mismos ciclos, diferencias de redondeo (la presión se guarda con 0,1 cmH2O de resolución).
 //
 // K de cada fase y BTPS (como la evaluación): el flujo del equipo es K·√|ΔV| con la K que tocó a CADA
 // MUESTRA según el signo de la presión en ese instante (Kesp si salió > 0, Kinsp si salió < 0). Como
 // Kinsp ≠ Kesp, una muestra con el sentido equivocado sale ×1,67 o ÷1,67. Con ConversionFlujo se recupera
 // √|ΔV| = |Q| / K_muestra y se vuelve a multiplicar por la K de la FASE completa y por el factor BTPS.
-// Se usa para los volúmenes del contador en vivo y para todas las features de flujo y volumen. Los
-// umbrales de flujo (40/10 L/min) siguen sobre el flujo del equipo, como en el Python.
+// Se usa para el volumen mínimo de cada tramo (en vivo y al guardar) y para todas las features de flujo y
+// volumen.
 //
 // Convenciones (placa actual): presión > 0 = INSPIRACIÓN; flujo del equipo < 0 = inspiración.
 // Flujos y volúmenes de las features en magnitud. PIM positiva, PEM negativa (respecto del reposo).
@@ -41,33 +45,31 @@ const int INSPIRACION = 1;
 const int ESPIRACION  = -1;
 const int REPOSO      = 0;
 
-// ---- Parámetros (mismos nombres y valores que en el Python) ----
+// ---- Parámetros (mismos nombres y valores que en deteccion_respiracion.py) ----
 const float  SIGNO_PRESION_INSPIRACION = 1.0f;   // placa actual: presión positiva al inspirar
-const float  UMBRAL_ALTO_LMIN      = 40.0f;      // |flujo| para que arranque una fase
-const float  UMBRAL_BAJO_LMIN      = 10.0f;      // la fase sigue mientras |flujo| esté sobre esto
 const int    HAMPEL_VENTANA        = 5;          // ±5 muestras (±50 ms a 100 Hz)
 const float  HAMPEL_N_SIGMA        = 3.0f;
 const float  HAMPEL_SIGMA_MIN_LMIN = 10.0f;
 const float  V_BAJO_CERO_MAX_V     = 0.020f;     // v_flujo más de 20 mV bajo su cero = falla del sensor
 const int    MARGEN_REPARACION     = 5;
-const float  PROFUNDIDAD_CORTE     = 0.30f;      // fases pegadas: valle < 30 % del pico menor
-const double VENTANA_VALLE_S       = 0.10;
-const double VENTANA_PICO_S        = 0.60;
-const double HUECO_UNION_S         = 0.15;
-const double DURACION_MIN_S        = 0.10;
 const double MAX_PAUSA_CICLO_S     = 2.0;
 const double CMH2O_L_A_J           = 98.0665e-3; // 1 cmH2O·L = 98,0665 Pa × 0,001 m³ = 0,0981 J
 
-// Volumen mínimo de una fase (no está en el Python). Antes de que la persona empiece (y al terminar)
-// aparecen "fases" de ruido que pasan los umbrales de flujo pero mueven muy poco aire: en las sesiones
-// medidas tienen 0,07-0,4 L, contra 0,8-2,9 L de una respiración de entrenamiento. Una fase con menos
-// volumen se descarta (no forma ciclo ni cuenta como fase suelta). Se aplica igual en vivo y al final.
-const double VOL_MIN_FASE_L        = 0.30;
+// ---- Detección por presión (en vivo y al guardar) ----
+const double CALIBRACION_INI_S          = 0.2;   // ventana de reposo inicial para el cero de presión
+const double CALIBRACION_FIN_S          = 1.0;
+const float  CALIBRACION_DISPERSION_MAX = 5.0f;  // p90 − p10 de la presión en esa ventana; más = no era reposo
+const float  P_BANDA_CMH2O              = 5.0f;  // banda de reposo: |P| menor que esto es "sin esfuerzo"
+const float  P_RUIDO_CMH2O              = 2.0f;  // dónde empieza/termina una fase cuando hay pausa
+const double IMPULSO_MIN                = 2.0;   // cmH2O·s: ∫|P| dt mínimo para confirmar una fase
+const double VOL_MIN_L                  = 0.15;  // volumen mínimo de una fase (con el flujo corregido)
+const double PAUSA_MIN_S                = 0.15;  // |P| en la banda al menos esto entre dos fases = pausa real
+const double UNION_MISMO_SENTIDO_S      = 0.5;   // fases del mismo sentido separadas por menos se unen
+const int    MAX_INVERTIDAS             = 10;    // racha de signo invertido dentro de una fase que se interpola
 
-// Solo del contador en vivo (no están en el Python)
-const double DESCARTE_INICIAL_S    = 0.2;        // el arranque de la captura no es reposo
-const float  ALFA_REPOSO           = 0.05f;      // promedio exponencial del reposo de la presión
-const int    MAX_MUESTRAS_TRAMO    = 2000;       // 20 s seguidos con flujo: se cierra el tramo igual
+// ---- Solo del contador en vivo (no están en el Python) ----
+const float  UMBRAL_ALTO_LMIN = 40.0f;   // |flujo| que cuenta como "está respirando" (corte por sin respiración)
+const float  ALFA_REPOSO      = 0.05f;   // si el primer segundo no fue reposo: seguimiento del cero de presión
 
 // Escalas de la señal guardada en RAM (enteros de 16 bits para que entren ~10.000 muestras)
 const float ESCALA_PRESION = 10.0f;     // 0,1 cmH2O
@@ -123,7 +125,7 @@ struct SenalEntrenamiento {
 
 // Bytes de RAM que necesita analizar() además de la señal (para revisar la memoria antes)
 inline size_t memoriaAnalisis(size_t n) {
-  return n * (2 /*limpio*/ + 1 /*fase*/ + 3 * 2 /*copias para medianas*/) + 8192;
+  return n * (2 /*limpio*/ + 2 /*con signo*/ + 4 /*magnitudes*/ + 1 /*fase*/ + 3 * 2 /*copias para medianas*/) + 8192;
 }
 inline size_t memoriaSenal(size_t n) { return n * (4 + 2 + 2 + 2); }
 
@@ -208,15 +210,23 @@ inline void reposoYRuido(const std::vector<int16_t> &x, float &centro, float &si
 // =============================================================================
 // 1) CONTADOR DE CICLOS EN VIVO
 // =============================================================================
-// Se le pasan las muestras de a una (t en s, flujo y presión como salen del equipo). Igual que el
-// Python: tramos con histéresis 40/10 L/min, corte en los valles hondos (se confirma 0,6 s después,
-// cuando ya se vio el pico de la derecha), sentido de cada pedazo por la presión pesada por |flujo|,
-// unión de pedazos del mismo sentido y descarte de fases cortas o con poco volumen. Un ciclo se cuenta cuando se cierra
-// la espiración que sigue a una inspiración (unos 0,15 s después de que termina de espirar).
-// Memoria: solo el tramo en curso (como mucho MAX_MUESTRAS_TRAMO muestras).
+// Mismo principio que analizar() (fases por presión), con las muestras de a una (t en s, flujo y presión
+// como salen del equipo; se redondean igual que al guardarlas en el CSV y leerlas):
+//   - Cero de la presión: se juntan las muestras hasta pasar CALIBRACION_FIN_S y se toma la mediana de la
+//     ventana de reposo inicial (como analizar). Recién ahí se procesan, empezando por las juntadas.
+//     Si esa ventana no fue reposo, el cero se va siguiendo con las muestras de flujo 0 (reposo): ahí el
+//     conteo en vivo puede diferir del análisis final, que lo estima con toda la captura.
+//   - Tramos de signo constante de la presión; se van acumulando el pico de |P|, el impulso y el volumen
+//     (flujo corregido). Como solo crecen, el tramo se CONFIRMA como fase apenas pasa los tres umbrales,
+//     sin esperar a que termine.
+//   - Ciclo: espiración confirmada después de una inspiración confirmada, con pausa <= MAX_PAUSA_CICLO_S
+//     (de la última muestra con |P| >= P_RUIDO_CMH2O de la inspiración a la primera de la espiración).
+//     Se cuenta mientras la persona todavía está espirando.
+//   - Unir fases del mismo sentido (lo hace analizar) no cambia cuántos ciclos hay: acá no hace falta.
+// Memoria: solo las muestras del primer segundo.
 class ContadorCiclos {
 public:
-  // K de cada fase y BTPS para el volumen de las fases (se mantiene al reiniciar)
+  // K de cada fase y BTPS para el volumen de los tramos (se mantiene al reiniciar)
   void configurar(const ConversionFlujo &c) { conv = c; }
 
   void reiniciar() {
@@ -227,166 +237,110 @@ public:
 
   // true si con esta muestra se completó un ciclo
   bool agregar(float t_s, float flujo_Lmin, float presion_cmH2O) {
+    // Mismo redondeo que la señal guardada (0,1 cmH2O y 0,1 L/min)
+    const float pr = SenalEntrenamiento::a16(SIGNO_PRESION_INSPIRACION * presion_cmH2O * ESCALA_PRESION) / ESCALA_PRESION;
+    const float q  = SenalEntrenamiento::a16(flujo_Lmin * ESCALA_FLUJO) / ESCALA_FLUJO;
     const double t = t_s;
-    const float mag = fabsf(flujo_Lmin);
-    const float pr = SIGNO_PRESION_INSPIRACION * presion_cmH2O;
     tActual = t;
+    if (!hayT0) { hayT0 = true; t0 = t; tUltimoFlujo = t; }
+    if (fabsf(q) > UMBRAL_ALTO_LMIN) tUltimoFlujo = t;
+
     nuevosCiclos = 0;
-    if (mag > UMBRAL_ALTO_LMIN) tUltimoFlujo = t;
-
-    if (mag > UMBRAL_BAJO_LMIN) {
-      if (!enTramo) { enTramo = true; superoAlto = false; limpiarTramo(); }
-      if (mag > UMBRAL_ALTO_LMIN) superoAlto = true;
-      agregarAlTramo(t, mag, pr - base, flujo_Lmin);
-      if (superoAlto) evaluarValles(false);   // un tramo que nunca pasa 40 L/min no es una fase
-      if ((int)tt.size() >= MAX_MUESTRAS_TRAMO) cerrarTramo();
+    if (!hayCero) {
+      inicio.push_back({t, pr, q});
+      if (t - t0 <= CALIBRACION_FIN_S) return false;
+      calcularCero();
+      for (auto &m : inicio) procesar(m.t, m.p, m.q);
+      std::vector<Muestra>().swap(inicio);
     } else {
-      if (enTramo) cerrarTramo();
-      // Reposo: se sigue el nivel de la presión (la tara puede haber quedado corrida)
-      if (mag == 0.0f && t >= DESCARTE_INICIAL_S) {
-        base += ALFA_REPOSO * (pr - base);
-      }
-    }
-
-    // La fase en armado ya no se puede unir con nada: se emite
-    if (hayFase) {
-      double proximo = (enTramo && !tt.empty()) ? tt[inicioPieza] : t;
-      if (proximo - faseFin > HUECO_UNION_S) emitirFase();
-      else if (enTramo && superoAlto && sentidoProvisorioContrario()) emitirFase();
+      procesar(t, pr, q);
     }
     return nuevosCiclos > 0;
   }
 
   int ciclos() const { return nCiclos; }
-  // Segundos desde el último flujo claro (> UMBRAL_ALTO) o desde el inicio
+  // Segundos desde el último flujo claro (> UMBRAL_ALTO_LMIN) o desde el inicio
   float segundosSinFlujo() const { return (float)(tActual - tUltimoFlujo); }
 
 private:
+  struct Muestra { double t; float p, q; };
   ConversionFlujo conv;
 
-  // Reposo de la presión (orientada: > 0 = inspiración)
+  // Cero de la presión (orientada: > 0 = inspiración)
+  bool hayT0 = false, hayCero = false, seguirCero = false;
+  double t0 = 0.0;
   float base = 0.0f;
+  std::vector<Muestra> inicio;       // muestras del primer segundo, hasta tener el cero
 
-  // Tramo en curso (índices locales). Suma acumulada de la presión pesada para el sentido de cada pedazo.
-  bool enTramo = false, superoAlto = false;
-  std::vector<double> tt;
-  std::vector<float> mg;
-  std::vector<float> fq;             // flujo del equipo con su signo (para recalcular con la K de la fase)
-  std::vector<double> sW;            // prefijo (tamaño = muestras + 1)
-  int inicioPieza = 0;               // primera muestra del pedazo abierto
-  int proxValle = 1;                 // próximo candidato a valle por evaluar
+  // Tramo de signo constante en curso
+  bool hayTramo = false, confirmado = false;
+  int sentido = REPOSO;
+  double pico = 0.0, impulso = 0.0, volumen = 0.0;
+  double tRuidoIni = -1.0, tRuidoFin = -1.0;   // primera y última muestra con |P| >= P_RUIDO_CMH2O
+  double tPrev = 0.0;
+  bool hayPrev = false;
 
-  // Fase en armado (pedazos del mismo sentido unidos)
-  bool hayFase = false;
-  int faseSentido = REPOSO;
-  double faseIni = 0.0, faseFin = 0.0;
-  double faseVol = 0.0;              // L, suma de los pedazos unidos
-
-  // Última fase emitida (para armar ciclos)
+  // Última fase confirmada (para armar ciclos)
   int ultimaFase = REPOSO;
   double ultimaFin = 0.0;
 
   int nCiclos = 0, nuevosCiclos = 0;
   double tActual = 0.0, tUltimoFlujo = 0.0;
 
-  void limpiarTramo() {
-    tt.clear(); mg.clear(); fq.clear();
-    sW.assign(1, 0.0);
-    inicioPieza = 0;
-    proxValle = 1;
-  }
-
-  void agregarAlTramo(double t, float mag, float pf, float flujo) {
-    tt.push_back(t);
-    mg.push_back(mag);
-    fq.push_back(flujo);
-    sW.push_back(sW.back() + (double)pf * mag);
-  }
-
-  // ¿Es k un valle hondo? z = última muestra que se puede mirar
-  bool esValle(int k, int z) const {
-    if (!(mg[k] <= mg[k - 1] && mg[k] < mg[k + 1])) return false;
-    int j0 = k, j1 = k;
-    while (j0 > 0 && tt[k] - tt[j0 - 1] <= VENTANA_VALLE_S) j0--;
-    while (j1 < z && tt[j1 + 1] - tt[k] <= VENTANA_VALLE_S) j1++;
-    for (int j = j0; j <= j1; j++) if (mg[j] < mg[k]) return false;
-    float izq = 0.0f, der = 0.0f;
-    for (int j = k - 1; j >= 0 && tt[k] - tt[j] <= VENTANA_PICO_S; j--) izq = std::max(izq, mg[j]);
-    for (int j = k + 1; j <= z && tt[j] - tt[k] <= VENTANA_PICO_S; j++) der = std::max(der, mg[j]);
-    return mg[k] < PROFUNDIDAD_CORTE * std::min(izq, der);
-  }
-
-  // Evalúa los candidatos que ya tienen completa la ventana de la derecha (o todos, al cerrar)
-  void evaluarValles(bool alCerrar) {
-    int z = (int)tt.size() - 1;
-    while (proxValle < z) {
-      if (!alCerrar && tt[z] - tt[proxValle] <= VENTANA_PICO_S) break;
-      int k = proxValle++;
-      if (esValle(k, z)) {
-        cerrarPieza(inicioPieza, k - 1);
-        inicioPieza = k;
+  void calcularCero() {
+    hayCero = true;
+    std::vector<float> v, reposo;
+    for (auto &m : inicio) {
+      double dt = m.t - t0;
+      if (dt >= CALIBRACION_INI_S && dt <= CALIBRACION_FIN_S) {
+        v.push_back(m.p);
+        if (m.q == 0.0f) reposo.push_back(m.p);
       }
     }
-  }
-
-  void cerrarTramo() {
-    if (superoAlto && !tt.empty()) {
-      evaluarValles(true);
-      cerrarPieza(inicioPieza, (int)tt.size() - 1);
+    if (v.size() >= 20) {
+      std::sort(v.begin(), v.end());
+      size_t n = v.size();
+      if (v[9 * n / 10] - v[n / 10] <= CALIBRACION_DISPERSION_MAX) { base = v[n / 2]; return; }
     }
-    enTramo = false;
-    superoAlto = false;
-    limpiarTramo();
+    // No fue reposo: se arranca con lo que haya de flujo 0 y se sigue ajustando en vivo
+    seguirCero = true;
+    if (!reposo.empty()) { std::sort(reposo.begin(), reposo.end()); base = reposo[reposo.size() / 2]; }
+    else if (!v.empty()) { std::sort(v.begin(), v.end()); base = v[v.size() / 2]; }
   }
 
-  // Inspiración y espiración pegadas: el pedazo abierto todavía no se cerró (su valle se confirma
-  // 0,6 s después), pero si ya dura DURACION_MIN_S y la presión dice el sentido contrario al de la
-  // fase en armado, esa fase no se va a unir con él: se emite ya, sin esperar.
-  bool sentidoProvisorioContrario() const {
-    int a = inicioPieza, z = (int)tt.size() - 1;
-    if (z <= a || tt[z] - tt[a] < DURACION_MIN_S) return false;
-    return sentido(sW[z + 1] - sW[a]) != faseSentido;
-  }
+  void procesar(double t, float pr, float q) {
+    if (seguirCero && q == 0.0f) base += ALFA_REPOSO * (pr - base);
+    const float pf = pr - base;
+    const int s = pf > 0 ? INSPIRACION : ESPIRACION;
+    const double dt = hayPrev ? t - tPrev : 0.0;
+    tPrev = t;
+    hayPrev = true;
 
-  // Sentido por la presión pesada por |flujo| (siempre por presión: ver el comentario del principio)
-  static int sentido(double w) { return (w > 0) ? INSPIRACION : ESPIRACION; }
-
-  // Volumen de un pedazo [a, z] de sentido f (trapecios de |flujo| con la K de f y BTPS, en L)
-  double volumenPieza(int a, int z, int f) const {
-    double v = 0.0;
-    for (int k = a + 1; k <= z; k++)
-      v += 0.5 * (conv.magnitud(fq[k], f) + conv.magnitud(fq[k - 1], f)) / 60.0 * (tt[k] - tt[k - 1]);
-    return v;
-  }
-
-  // Sentido de un pedazo [a, z] y unión con la fase en armado
-  void cerrarPieza(int a, int z) {
-    int f = sentido(sW[z + 1] - sW[a]);
-    double vol = volumenPieza(a, z, f);
-
-    if (hayFase && faseSentido == f && tt[a] - faseFin <= HUECO_UNION_S) {
-      faseFin = tt[z];
-      faseVol += vol;
-      return;
+    if (!hayTramo || s != sentido) {   // cruce por cero: empieza otro tramo
+      hayTramo = true;
+      confirmado = false;
+      sentido = s;
+      pico = impulso = volumen = 0.0;
+      tRuidoIni = tRuidoFin = -1.0;
     }
-    if (hayFase) emitirFase();
-    hayFase = true;
-    faseSentido = f;
-    faseIni = tt[a];
-    faseFin = tt[z];
-    faseVol = vol;
-  }
-
-  void emitirFase() {
-    hayFase = false;
-    if (faseFin - faseIni < DURACION_MIN_S) return;   // ruido
-    if (faseVol < VOL_MIN_FASE_L) return;             // ruido: pasa los umbrales de flujo pero casi no mueve aire
-    if (faseSentido == ESPIRACION && ultimaFase == INSPIRACION && faseIni - ultimaFin <= MAX_PAUSA_CICLO_S) {
-      nCiclos++;
-      nuevosCiclos++;
+    impulso += fabsf(pf) * dt;
+    volumen += conv.magnitud(q, s) / 60.0 * dt;
+    pico = std::max(pico, (double)fabsf(pf));
+    if (fabsf(pf) >= P_RUIDO_CMH2O) {
+      if (tRuidoIni < 0) tRuidoIni = t;
+      tRuidoFin = t;
     }
-    ultimaFase = faseSentido;
-    ultimaFin = faseFin;
+
+    if (!confirmado && pico >= P_BANDA_CMH2O && impulso >= IMPULSO_MIN && volumen >= VOL_MIN_L) {
+      confirmado = true;
+      if (s == ESPIRACION && ultimaFase == INSPIRACION && tRuidoIni - ultimaFin <= MAX_PAUSA_CICLO_S) {
+        nCiclos++;
+        nuevosCiclos++;
+      }
+      ultimaFase = s;
+    }
+    // La inspiración confirmada se sigue estirando hasta que termina su tramo
+    if (confirmado && s == INSPIRACION) ultimaFin = tRuidoFin;
   }
 };
 
@@ -461,104 +415,151 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
   out.muestras_reparadas = repararCaidas(s);
   std::vector<uint16_t>().swap(s.vFlujo);
 
-  // Presión orientada y sin su nivel de reposo
-  // (el desvío que calcula reposoYRuido solo sirve para descartar las respiraciones al buscar el reposo)
-  float pBase, pDesvio;
+  // ---- Cero de la presión: mediana de la ventana de reposo inicial (como la calibración de la ESP).
+  //      Si esa ventana no fue reposo (p90 − p10 > CALIBRACION_DISPERSION_MAX), se estima de toda la captura.
+  float pBase;
   {
-    std::vector<int16_t> pr(n);
-    for (int k = 0; k < n; k++) pr[k] = (int16_t)(SIGNO_PRESION_INSPIRACION * s.presion[k]);
-    reposoYRuido(pr, pBase, pDesvio);
-    pBase /= ESCALA_PRESION;
-  }
-  out.presion_base_cmH2O = SIGNO_PRESION_INSPIRACION * pBase;
-  auto PF  = [&](int k) { return SIGNO_PRESION_INSPIRACION * s.presion[k] / ESCALA_PRESION - pBase; };
-  auto Q   = [&](int k) { return s.flujo[k] / ESCALA_FLUJO; };
-  auto MAG = [&](int k) { return std::abs((int)s.flujo[k]) / ESCALA_FLUJO; };
-
-  // ---- Tramos con flujo (histéresis) ----
-  std::vector<std::pair<int, int>> tramos;
-  for (int i = 0; i < n;) {
-    if (MAG(i) <= UMBRAL_ALTO_LMIN) { i++; continue; }
-    int a = i, z = i;
-    while (a > 0 && MAG(a - 1) > UMBRAL_BAJO_LMIN) a--;
-    while (z < n - 1 && MAG(z + 1) > UMBRAL_BAJO_LMIN) z++;
-    if (!tramos.empty() && a <= tramos.back().second) tramos.back().second = z;
-    else tramos.push_back({a, z});
-    i = z + 1;
-  }
-
-  // ---- Corte en los valles hondos ----
-  std::vector<std::pair<int, int>> pedazos;
-  for (auto &tr : tramos) {
-    int a = tr.first, z = tr.second, desde = a;
-    for (int k = a + 1; k < z; k++) {
-      float mk = MAG(k);
-      if (!(mk <= MAG(k - 1) && mk < MAG(k + 1))) continue;
-      int j0 = k, j1 = k;
-      while (j0 > a && T(k) - T(j0 - 1) <= VENTANA_VALLE_S) j0--;
-      while (j1 < z && T(j1 + 1) - T(k) <= VENTANA_VALLE_S) j1++;
-      bool minimo = true;
-      for (int j = j0; j <= j1 && minimo; j++) if (MAG(j) < mk) minimo = false;
-      if (!minimo) continue;
-      float izq = 0.0f, der = 0.0f;
-      for (int j = a; j < k; j++) if (T(k) - T(j) <= VENTANA_PICO_S) izq = std::max(izq, MAG(j));
-      for (int j = k + 1; j <= z; j++) if (T(j) - T(k) <= VENTANA_PICO_S) der = std::max(der, MAG(j));
-      if (mk < PROFUNDIDAD_CORTE * std::min(izq, der)) {
-        pedazos.push_back({desde, k - 1});
-        desde = k;
+    std::vector<int16_t> ventana;
+    for (int k = 0; k < n; k++) {
+      double dt = T(k) - T(0);
+      if (dt >= CALIBRACION_INI_S && dt <= CALIBRACION_FIN_S)
+        ventana.push_back((int16_t)(SIGNO_PRESION_INSPIRACION * s.presion[k]));
+    }
+    bool hayReposo = false;
+    if (ventana.size() >= 20) {
+      std::sort(ventana.begin(), ventana.end());
+      size_t m = ventana.size();
+      float dispersion = (ventana[9 * m / 10] - ventana[m / 10]) / ESCALA_PRESION;
+      if (dispersion <= CALIBRACION_DISPERSION_MAX) {
+        pBase = ventana[m / 2] / ESCALA_PRESION;
+        hayReposo = true;
       }
     }
-    pedazos.push_back({desde, z});
-  }
-
-  // ---- Sentido de cada pedazo y unión de los vecinos del mismo sentido ----
-  //      Siempre por la presión: signo de la presión pesada por |flujo| (el flujo bajo casi no pesa)
-  struct Fase { int a, z, f; };
-  std::vector<Fase> unidos;
-  for (auto &pz : pedazos) {
-    int a = pz.first, z = pz.second;
-    double w = 0;
-    for (int k = a; k <= z; k++) w += PF(k) * MAG(k);
-    Fase fs;
-    fs.a = a; fs.z = z;
-    fs.f = (w > 0) ? INSPIRACION : ESPIRACION;
-    if (!unidos.empty() && unidos.back().f == fs.f && T(a) - T(unidos.back().z) <= HUECO_UNION_S) {
-      unidos.back().z = z;
-    } else {
-      unidos.push_back(fs);
+    std::vector<int16_t>().swap(ventana);
+    if (!hayReposo) {
+      std::vector<int16_t> pr(n);
+      for (int k = 0; k < n; k++) pr[k] = (int16_t)(SIGNO_PRESION_INSPIRACION * s.presion[k]);
+      float desvio;
+      reposoYRuido(pr, pBase, desvio);
+      pBase /= ESCALA_PRESION;
     }
   }
+  out.presion_base_cmH2O = SIGNO_PRESION_INSPIRACION * pBase;
+  auto PF = [&](int k) { return SIGNO_PRESION_INSPIRACION * s.presion[k] / ESCALA_PRESION - pBase; };
+  auto Q  = [&](int k) { return s.flujo[k] / ESCALA_FLUJO; };
 
-  std::vector<Fase> fases;
-  for (auto &fs : unidos) if (T(fs.z) - T(fs.a) >= DURACION_MIN_S) fases.push_back(fs);
-  std::vector<std::pair<int, int>>().swap(tramos);
-  std::vector<std::pair<int, int>>().swap(pedazos);
+  // ---- Fases por presión (PF > 0 = inspiración) ----
+  struct Fase { int a, z, f; };
+  // 1) Tramos de signo constante, y 2) confirmación por tamaño: pico de |P|, impulso ∫|P| dt y volumen
+  //    (con el flujo corregido: K del sentido del tramo y BTPS). Los demás tramos son ruido o pausa.
+  std::vector<Fase> confirmadas;
+  {
+    int a = 0;
+    for (int k = 1; k <= n; k++) {
+      if (k < n && (PF(k) > 0) == (PF(a) > 0)) continue;
+      int z = k - 1, f = PF(a) > 0 ? INSPIRACION : ESPIRACION;
+      double impulso = 0.0, volumen = 0.0, pico = 0.0;
+      for (int j = a; j <= z; j++) {
+        double dt = j > 0 ? T(j) - T(j - 1) : 0.0;
+        impulso += fabs(PF(j)) * dt;
+        volumen += conv.magnitud(Q(j), f) / 60.0 * dt;
+        pico = std::max(pico, (double)fabsf(PF(j)));
+      }
+      if (pico >= P_BANDA_CMH2O && impulso >= IMPULSO_MIN && volumen >= VOL_MIN_L)
+        confirmadas.push_back({a, z, f});
+      a = k;
+    }
+  }
+  // Primera (o última) muestra de [a, z] fuera de la banda de reposo
+  auto fueraDeBanda = [&](int a, int z, bool desdeElFinal) {
+    if (desdeElFinal) { for (int k = z; k >= a; k--) if (fabsf(PF(k)) >= P_BANDA_CMH2O) return k; return z; }
+    for (int k = a; k <= z; k++) if (fabsf(PF(k)) >= P_BANDA_CMH2O) return k;
+    return a;
+  };
+  // 3) Unir fases del mismo sentido con poco tiempo en reposo entre ellas
+  std::vector<Fase> unidas;
+  for (auto &fs : confirmadas) {
+    if (!unidas.empty() && unidas.back().f == fs.f) {
+      int finPrev = fueraDeBanda(unidas.back().a, unidas.back().z, true);
+      int iniSig  = fueraDeBanda(fs.a, fs.z, false);
+      if (T(iniSig) - T(finPrev) <= UNION_MISMO_SENTIDO_S) { unidas.back().z = fs.z; continue; }
+    }
+    unidas.push_back(fs);
+  }
+  std::vector<Fase>().swap(confirmadas);
+  // 4) Bordes: recortar al nivel de ruido y pegar las fases de sentido contrario sin pausa entre ellas
+  std::vector<Fase> fases(unidas.size());
+  for (size_t i = 0; i < unidas.size(); i++) {
+    int a = unidas[i].a, z = unidas[i].z, ini = a, fin = z;
+    for (int k = a; k <= z; k++) if (fabsf(PF(k)) >= P_RUIDO_CMH2O) { ini = k; break; }
+    for (int k = z; k >= a; k--) if (fabsf(PF(k)) >= P_RUIDO_CMH2O) { fin = k; break; }
+    fases[i] = {ini, fin, unidas[i].f};
+  }
+  for (size_t i = 0; i + 1 < unidas.size(); i++) {
+    const Fase &f1 = unidas[i], &f2 = unidas[i + 1];
+    if (f1.f == f2.f) continue;   // mismo sentido sin unir: hubo una pausa larga, quedan recortadas
+    double reposo = T(fueraDeBanda(f2.a, f2.z, false)) - T(fueraDeBanda(f1.a, f1.z, true));
+    if (reposo < PAUSA_MIN_S) {   // sin pausa: la siguiente arranca en su cruce por cero
+      fases[i + 1].a = f2.a;
+      fases[i].z = f2.a - 1;
+    }
+  }
+  std::vector<Fase>().swap(unidas);
 
   std::vector<int8_t> fase(n, REPOSO);
   for (auto &fs : fases) for (int k = fs.a; k <= fs.z; k++) fase[k] = (int8_t)fs.f;
 
-  // ---- Flujo limpio: signo y K de la fase, BTPS + Hampel ----
-  auto corregido = [&](int k) {
-    float q = Q(k);
-    if (fase[k] == INSPIRACION) return -conv.magnitud(q, INSPIRACION);
-    if (fase[k] == ESPIRACION)  return  conv.magnitud(q, ESPIRACION);
-    return q * conv.factorBTPS;   // reposo: sin fase, solo BTPS
-  };
+  // ---- Flujo limpio ----
+  // a) Signo y K de la fase, y BTPS. Las rachas cortas (≤ MAX_INVERTIDAS) de signo invertido dentro de una
+  //    fase (el equipo eligió mal el sentido y la K cerca de presión 0, ej. 68, −122, 72 en una espiración)
+  //    se reemplazan interpolando entre las muestras buenas vecinas. En reposo: el flujo del equipo × BTPS.
+  std::vector<int16_t> conSigno(n);
+  {
+    auto invertida = [&](int k) {
+      return fase[k] != REPOSO && s.flujo[k] != 0 && (s.flujo[k] > 0) == (fase[k] == INSPIRACION);
+    };
+    std::vector<float> m(n);
+    for (int k = 0; k < n; k++) m[k] = fase[k] == REPOSO ? 0.0f : conv.magnitud(Q(k), fase[k]);
+    int k = 0;
+    while (k < n) {
+      if (!invertida(k)) { k++; continue; }
+      int f = fase[k], a = k;
+      while (k < n && fase[k] == f && invertida(k)) k++;
+      int z = k - 1;
+      if (z - a + 1 > MAX_INVERTIDAS) continue;   // racha larga: solo se corrige el signo (y la K)
+      bool hayIzq = a > 0 && fase[a - 1] == f, hayDer = z + 1 < n && fase[z + 1] == f;
+      if (!hayIzq && !hayDer) continue;
+      float izq = hayIzq ? m[a - 1] : m[z + 1], der = hayDer ? m[z + 1] : izq;
+      for (int j = a; j <= z; j++) m[j] = izq + (float)(j - a + 1) / (z - a + 2) * (der - izq);
+    }
+    for (int j = 0; j < n; j++) {
+      float x = fase[j] == INSPIRACION ? -m[j] : fase[j] == ESPIRACION ? m[j] : Q(j) * conv.factorBTPS;
+      conSigno[j] = SenalEntrenamiento::a16(x * ESCALA_FLUJO);
+    }
+  }
+  // b) Hampel DENTRO de cada tramo de fase constante: si la ventana mezclara la fase vecina (de signo
+  //    contrario), un pico en el borde de la fase no se detectaría.
   std::vector<int16_t> limpio(n);
   {
     float w[2 * HAMPEL_VENTANA + 1], dv[2 * HAMPEL_VENTANA + 1];
-    for (int i = 0; i < n; i++) {
-      int a = std::max(0, i - HAMPEL_VENTANA), z = std::min(n - 1, i + HAMPEL_VENTANA), m = z - a + 1;
-      for (int j = 0; j < m; j++) w[j] = corregido(a + j);
-      std::sort(w, w + m);
-      float med = w[m / 2];
-      for (int j = 0; j < m; j++) dv[j] = fabsf(w[j] - med);
-      std::sort(dv, dv + m);
-      float sigma = std::max(HAMPEL_SIGMA_MIN_LMIN, 1.4826f * dv[m / 2]);
-      float x = corregido(i);
-      limpio[i] = SenalEntrenamiento::a16((fabsf(x - med) > HAMPEL_N_SIGMA * sigma ? med : x) * ESCALA_FLUJO);
+    int ini = 0;
+    for (int fin = 1; fin <= n; fin++) {
+      if (fin < n && fase[fin] == fase[ini]) continue;
+      for (int i = ini; i < fin; i++) {
+        int a = std::max(ini, i - HAMPEL_VENTANA), z = std::min(fin - 1, i + HAMPEL_VENTANA), m = z - a + 1;
+        for (int j = 0; j < m; j++) w[j] = conSigno[a + j] / ESCALA_FLUJO;
+        std::sort(w, w + m);
+        float med = w[m / 2];
+        for (int j = 0; j < m; j++) dv[j] = fabsf(w[j] - med);
+        std::sort(dv, dv + m);
+        float sigma = std::max(HAMPEL_SIGMA_MIN_LMIN, 1.4826f * dv[m / 2]);
+        float x = conSigno[i] / ESCALA_FLUJO;
+        limpio[i] = SenalEntrenamiento::a16((fabsf(x - med) > HAMPEL_N_SIGMA * sigma ? med : x) * ESCALA_FLUJO);
+      }
+      ini = fin;
     }
   }
+  std::vector<int16_t>().swap(conSigno);
   auto L = [&](int k) { return fabsf(limpio[k] / ESCALA_FLUJO); };
 
   // ---- Eventos ----
@@ -587,9 +588,6 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
     e.volumen_L = (float)vol;
     e.presionPico_cmH2O = SIGNO_PRESION_INSPIRACION * PF(iPres);
     e.tPresionPico_s = (float)T(iPres);
-    // Ruido (típico antes de que la persona empiece): se descarta como si no hubiera estado, así no
-    // forma un ciclo ni separa una inspiración de su espiración
-    if (e.volumen_L < VOL_MIN_FASE_L) continue;
     eventos.push_back(e);
   }
 
@@ -608,7 +606,7 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
     c.vol_insp_L = in.volumen_L; c.vol_esp_L = es.volumen_L;
     c.pim_cmH2O = in.presionPico_cmH2O; c.pem_cmH2O = es.presionPico_cmH2O;
     c.trabajo_insp_J = in.trabajo_J;
-    c.potencia_insp_W = in.trabajo_J / in.duracion_s;   // la duración es >= DURACION_MIN_S (nunca 0)
+    c.potencia_insp_W = in.duracion_s > 0.0f ? in.trabajo_J / in.duracion_s : NAN;
     c.t_pif_s = in.tPico_s; c.t_pef_s = es.tPico_s;
     c.t_pim_s = in.tPresionPico_s; c.t_pem_s = es.tPresionPico_s;
     out.ciclos.push_back(c);

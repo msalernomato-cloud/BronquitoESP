@@ -102,7 +102,7 @@ void FlujoEntrenamiento::ejecutar() {
   //    (las features se calculan al final). Termina sola al llegar al objetivo, si no respira durante
   //    SIN_RESPIRAR_MAX_S, o cuando tocan "Detener".
   AnalisisEntrenamiento::ContadorCiclos contador;
-  contador.configurar(conv);   // el volumen de cada fase (filtro de VOL_MIN_FASE_L) con su K y BTPS
+  contador.configurar(conv);   // el volumen de cada tramo (umbral VOL_MIN_L) con su K y BTPS
   contador.reiniciar();
   const char *fin = "detenida";
   uint32_t t0 = millis();
