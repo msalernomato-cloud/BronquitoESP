@@ -10,6 +10,7 @@
 #include "RespiratorySensors.h"
 #include "AnalisisEspiro.h"
 #include "AnalisisPIM.h"
+#include "AnalisisEntrenamiento.h"
 
 // =============================================================================
 // TARJETA microSD
@@ -19,10 +20,12 @@
 //
 // Qué hay en la tarjeta:
 //   /perfil.json                 datos del paciente (incluye el PIN)
-//   /CONFIGURACION.JSON          frecuencia de entrenamiento que indicó el médico y nivel de resistencia
+//   /CONFIGURACION.JSON          lo que manda la web ("frecuencia", "resistencia_web", "predichos") y el
+//                                nivel de resistencia que calcula el equipo ("resistencia_auto")
 //   /EVALUACIONES/<id>.json      resumen de cada medición (métricas, validación, ambiente)
 //   /EVALUACIONES/<id>.csv       señal completa de cada medición
-//   /ENTRENAMIENTOS/             (reservada para las sesiones de entrenamiento)
+//   /ENTRENAMIENTOS/<id>.csv     señal completa de cada sesión de entrenamiento
+//   /ENTRENAMIENTOS/<id>.json    estado de la sesión, features de cada ciclo y resumen
 //
 // Bus SPI propio, conector J8: CS 19, SCK 22, MISO 23, MOSI 21.
 // =============================================================================
@@ -68,13 +71,42 @@ struct FrecuenciaGuardada {
 };
 
 // ---- Nivel de resistencia del entrenamiento (/CONFIGURACION.JSON) ---------
-// Por ahora se carga a mano en la tarjeta. Más adelante lo va a escribir el algoritmo de la web
-// a partir de la evaluación (espirometría + PIM), o el médico si lo fija él.
-struct ResistenciaGuardada {
-  int nivel = 0;                 // 1 (válvula más abierta) a 5 (más cerrada); 0 = no hay ninguno guardado
-  int vigenciaDias = 0;          // cada cuántos días vence la evaluación
+// Cada sección tiene UN solo dueño, así la web y el equipo nunca escriben el mismo dato:
+//   "resistencia_web"  la manda la web: modo ("automatico" | "manual") y el nivel que fijó el médico
+//   "predichos"        la manda la web: FVC y PIM predichas del paciente (cambian con la edad)
+//   "resistencia_auto" la escribe el equipo después de cada evaluación (ver NivelResistencia.h)
+struct ResistenciaWeb {
+  bool manual = false;           // false = automático (también si la web todavía no mandó nada)
+  int nivelManual = 0;           // 1 (válvula más abierta) a 5 (más cerrada); 0 = no hay
+  String enviado;                // "AAAA-MM-DD"
+};
+
+struct Predichos {
+  float fvc_L = NAN;             // NAN = la web no lo mandó (o mandó null)
+  float pim_cmH2O = NAN;
+};
+
+struct ResistenciaAuto {
+  bool hay = false;              // false = todavía no hubo ninguna evaluación válida (PIM + espirometría)
+  int nivel = 0;                 // 1 a 5; 0 = no se pudo calcular (faltan los predichos)
+  float puntajeS = NAN, pctPim = NAN, pctFvc = NAN;
+  float pim_cmH2O = NAN, fvc_L = NAN;   // la mejor PIM y la mejor FVC de ese día
+  String fechaEvaluacion;        // "AAAA-MM-DD"
+  int vigenciaDias = 0;
   String vence;                  // "AAAA-MM-DD"
-  bool fijadoPorMedico = false;  // true = "fijado_por": "medico"; false = "algoritmo"
+};
+
+// Lo que se usa para entrenar, combinando las tres secciones (TarjetaSD::estadoResistencia)
+struct EstadoResistencia {
+  bool manual = false;           // nivel fijado por el médico: no vence
+  int nivel = 0;                 // el que se usa (0 = no hay)
+  bool hayEvaluacion = false;    // hay una evaluación válida guardada
+  String fechaEvaluacion;        // "AAAA-MM-DD" de la última evaluación válida
+  String vence;                  // "AAAA-MM-DD" (vacío en modo manual)
+  int vigenciaDias = 0;
+  bool hayFechaHoy = false;      // false = el equipo no tiene la hora: no se puede saber si venció
+  int diasRestantes = 0;         // hasta "vence" (negativo = venció); vale solo si hayFechaHoy
+  bool puedeEntrenar = false;    // manual, o automático con una evaluación vigente (o sin fecha para verificarlo)
 };
 
 // ---- Temperatura y humedad al medir (DHT22) y factor BTPS aplicado ---------
@@ -99,6 +131,26 @@ struct ResumenMedicion {
   int   intentos = 0, intentoInformado = 0;
   // Ambiente
   float temperatura_c = NAN, humedad_pct = NAN;
+};
+
+// ---- Resumen de un entrenamiento leído del .json (para el historial) --------
+// Solo las features globales (el "resumen" del .json), sin las de cada ciclo. Lo que no está en el
+// archivo (o es null) queda en NAN / 0 y la pantalla muestra "--".
+struct ResumenEntrenamiento {
+  String estado, fin;                 // "completa" | "incompleta" | "interrumpida" ; por qué terminó
+  int   ciclosObjetivo = 0;
+  float duracion_s = NAN;
+  bool  hayFeatures = false;          // false: el resumen quedó en null (no se pudo analizar)
+  // Promedios por ciclo
+  float ti_s = NAN, te_s = NAN, pausa_s = NAN, ti_ttot = NAN;
+  float pif_Lmin = NAN, pef_Lmin = NAN, volInsp_L = NAN, volEsp_L = NAN;
+  float pim_cmH2O = NAN, pem_cmH2O = NAN, trabajoInsp_J = NAN, potenciaInsp_W = NAN;
+  // Multiciclo
+  int   nCiclos = 0, nFasesSueltas = 0;
+  float periodo_s = NAN, frecuencia_rpm = NAN, ventilacionMinuto_Lmin = NAN, trabajoTotalInsp_J = NAN;
+  float pendientePim = NAN, caidaPim_pct = NAN;
+  float pifMax_Lmin = NAN, pefMax_Lmin = NAN, pimMax_cmH2O = NAN, pemMax_cmH2O = NAN;
+  int   pifMaxCiclo = 0, pefMaxCiclo = 0, pimMaxCiclo = 0, pemMaxCiclo = 0;   // 0 = no se sabe
 };
 
 // ---- Señal de una medición leída del .csv (para graficar) ------------------
@@ -146,14 +198,24 @@ public:
   // =========================================================================
   bool guardarFrecuencia(JsonVariantConst frecuencia);   // pisa solo esa clave del archivo
   FrecuenciaGuardada leerFrecuencia();
-  ResistenciaGuardada leerResistencia();   // "resistencia" de /CONFIGURACION.JSON (nivel 0 si no hay)
+  bool guardarResistenciaWeb(JsonVariantConst resistencia);   // pisa solo "resistencia_web"
+  bool guardarPredichos(JsonVariantConst predichos);           // pisa solo "predichos"
+  ResistenciaWeb leerResistenciaWeb();
+  Predichos leerPredichos();
+  ResistenciaAuto leerResistenciaAuto();
+  // Recalcula "resistencia_auto" con las evaluaciones de /EVALUACIONES: del día más reciente que tenga
+  // al menos una PIM y una espirometría válidas, la mejor PIM y la mejor FVC. Llamarla después de cada
+  // evaluación y cuando llegan predichos nuevos. Si no hay ninguna evaluación válida, no cambia nada.
+  bool actualizarResistenciaAuto();
+  // Nivel que se usa y si se puede entrenar. fechaHoy = Reloj::fechaHoraActual() ("sin hora" si no hay)
+  EstadoResistencia estadoResistencia(const String &fechaHoy);
 
   // =========================================================================
   // MEDICIONES (se guardan al terminar cada maniobra)
   // =========================================================================
 
   // Identificador de una calibración nueva: "eval_AAAAMMDD_HHMMSS",
-  // o "eval_SINHORA_n" si no hay una hora válida.
+  // o "eval_SINHORA_n_xxxxxx" si no hay una hora válida (no se repite nunca: ver nuevoIdSinHora).
   String nuevoIdCalibracion(const String &fechaHora);
 
   // Una calibración se guarda como varios archivos con el mismo id (los nombres los arma esta librería):
@@ -180,6 +242,35 @@ public:
   void borrarTemporalesPIM();
 
   // =========================================================================
+  // ENTRENAMIENTOS (/ENTRENAMIENTOS/<id>.csv y <id>.json)
+  // -------------------------------------------------------------------------
+  // La sesión no entra en RAM: el .csv se escribe de a bloques mientras se mide, en un temporal
+  // <id>.csv.tmp. Al terminar, cargarSenalEntrenamiento() lo vuelve a leer para calcular las
+  // features, y guardarEntrenamiento() lo renombra y escribe el .json (con las features si las hay);
+  // descartarEntrenamiento() borra todo lo de esa sesión.
+  // =========================================================================
+  String nuevoIdEntrenamiento(const String &fechaHora);   // "ent_AAAAMMDD_HHMMSS" o "ent_SINHORA_n_xxxxxx"
+  bool iniciarEntrenamiento(const String &id);            // crea el .csv.tmp con el encabezado
+  bool agregarMuestrasEntrenamiento(const MuestraEspiro *muestras, size_t cantidad);
+  bool cerrarEntrenamiento();                             // cierra el .csv.tmp (false si falló la escritura)
+  // Lee el .csv.tmp ya cerrado. false si no hay memoria para la señal y el análisis, o si falla la lectura.
+  bool cargarSenalEntrenamiento(const String &id, AnalisisEntrenamiento::SenalEntrenamiento &senal);
+  // Reescribe el .csv.tmp con una columna más, flujo_proc_lmin: el flujo procesado del análisis (una por
+  // cada fila que leyó cargarSenalEntrenamiento). Vacía si flujoProc está vacío (no se pudo analizar).
+  // Si falla, el .csv.tmp queda como estaba (sin la columna).
+  bool agregarFlujoProcesado(const String &id, const std::vector<int16_t> &flujoProc);
+  // estado: "completa" | "incompleta" | "interrumpida". fin: por qué terminó ("objetivo", "detenida",
+  // "sin_respiracion", "tiempo_maximo"). features == nullptr: no se pudieron calcular (van en null).
+  // fechaHora: la de Reloj::fechaHoraActual() al empezar (si no hay hora, no se guarda)
+  // amb: temperatura, humedad y factor BTPS aplicado (si no se pudo leer el DHT22 van en null)
+  // nivelResistencia / resistenciaManual: con qué nivel se entrenó y quién lo fijó (0 = no había nivel)
+  bool guardarEntrenamiento(const String &id, const String &fechaHora, const CondicionesAmbiente &amb,
+                            int nivelResistencia, bool resistenciaManual, float duracion_s, float dcServo,
+                            const char *estado, const char *fin, int ciclosObjetivo,
+                            const AnalisisEntrenamiento::FeaturesEntrenamiento *features);
+  bool descartarEntrenamiento(const String &id);
+
+  // =========================================================================
   // HISTORIAL
   // =========================================================================
 
@@ -187,6 +278,11 @@ public:
   int listarMediciones(String *ids, String *fechas, String *tipos, int max);
   bool leerResumen(const String &id, ResumenMedicion &resumen);   // el .json de una medición
   bool cargarSerie(const String &id, SerieMedicion &serie); // el .csv, con el volumen calculado
+
+  // Entrenamientos guardados, del más nuevo al más viejo (hasta 'max'). -1 si no hay tarjeta.
+  // tipos = "ciclos hechos/objetivo" (ej. "12/30 ciclos")
+  int listarEntrenamientos(String *ids, String *fechas, String *tipos, int max);
+  bool leerResumenEntrenamiento(const String &id, ResumenEntrenamiento &resumen);   // el .json
 
   // =========================================================================
   // MANTENIMIENTO
@@ -209,6 +305,14 @@ public:
   // Pone "sincronizado": true en el .json, para no volver a subirla
   bool marcarSincronizado(const String &archivo);
 
+  // Entrenamientos (ver FlujoConexion::subirPendientes). El .csv de una sesión puede tener cientos de KB:
+  // no entra en RAM, así que se sube aparte, leyéndolo directo de la SD (BronquitoNetwork::subirCsvEntrenamiento)
+  std::vector<String> listarEntrenamientosPendientes(int max);   // ids sin "sincronizado": true
+  // Cuerpo de POST /dispositivo/entrenamientos: {"usuario", "archivo", "resumen": <el .json>} (sin el .csv)
+  bool armarEnvioEntrenamiento(const String &archivo, const String &usuario, String &cuerpo);
+  File abrirCsvEntrenamiento(const String &archivo);             // para subirlo; cerrarlo después
+  bool marcarEntrenamientoSincronizado(const String &archivo);
+
   // =========================================================================
   // LIBERAR ESPACIO (ver EspacioSD)
   // =========================================================================
@@ -226,6 +330,9 @@ private:
   bool montada = false;
   PerfilPaciente perfil;
   EstadoTarjeta estadoActual = TARJETA_NO_ESTA;
+  fs::File archivoEntrenamiento;       // .csv.tmp de la sesión en curso
+  bool errorEntrenamiento = false; // falló alguna escritura de la sesión en curso
+  size_t muestrasEntrenamiento = 0; // muestras escritas en la sesión en curso (para reservar la memoria justa)
 
   bool montar();
   void olvidarPaciente(EstadoTarjeta motivo);

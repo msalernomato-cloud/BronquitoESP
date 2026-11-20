@@ -862,7 +862,9 @@ void BronquitoUI::mostrarConfiguracion(int sesiones, const bool *dias, const Str
     // Vencimiento
     String linea;
     uint16_t color = COLOR_TEXTO_GRIS;
-    if (res.vence.length() != 10) {
+    if (res.sinVencimiento) {
+      linea = "Sin vencimiento";
+    } else if (res.vence.length() != 10) {
       linea = "Sin fecha de vencimiento";
       color = BRONQUITO_ORANGE;
     } else if (!res.hayFechaHoy) {
@@ -1140,6 +1142,165 @@ int BronquitoUI::mostrarResumenCalibracion(const String &titulo, const String &f
   }
 }
 
+// ======================= HISTORIAL DE ENTRENAMIENTOS =======================
+
+int BronquitoUI::elegirEntrenamiento(const String *fechas, const String *tipos, int n, int &pagina) {
+  hasDot = false;
+  const int POR_PAG = 5;
+  const int FILA_Y = 60, FILA_H = 36, FILA_P = 40;
+  int paginas = (n + POR_PAG - 1) / POR_PAG;
+  if (paginas < 1) paginas = 1;
+  int pag = constrain(pagina, 0, paginas - 1);
+
+  tft.fillScreen(COLOR_FONDO);
+  tft.fillRect(0, 0, 480, 45, BRONQUITO_CYAN);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
+  tft.setTextSize(2);
+  escribir("Entrenamientos guardados", 15, 23);
+
+  auto dibujarPagina = [&]() {
+    tft.fillRect(0, 46, 480, 274, COLOR_FONDO);
+    tft.setTextDatum(ML_DATUM);
+
+    if (n == 0) {
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextSize(2);
+      tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
+      escribir("No hay entrenamientos", 240, 120);
+      tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
+      escribir("guardados todavía", 240, 150);
+    } else {
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
+      escribir("FECHA", 20, 53);
+      escribir("CICLOS", 225, 53);
+
+      for (int i = 0; i < POR_PAG; i++) {
+        int idx = pag * POR_PAG + i;
+        if (idx >= n) break;
+        int y = FILA_Y + i * FILA_P;
+
+        tft.fillRoundRect(10, y, 460, FILA_H, 6, COLOR_CAMPO_BG);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextSize(2);
+        tft.setTextColor(BRONQUITO_BROWN, COLOR_CAMPO_BG);
+        escribir(fechas[idx], 20, y + FILA_H / 2);
+        tft.setTextColor(BRONQUITO_CYAN, COLOR_CAMPO_BG);
+        escribir(tipos[idx], 225, y + FILA_H / 2);
+        dibujarBoton(385, y + 3, 75, FILA_H - 6, "Ver", BRONQUITO_CYAN);
+      }
+    }
+
+    dibujarBoton(10, 266, 150, 40, "Volver", COLOR_TEXTO_GRIS);
+    if (paginas > 1) {
+      dibujarBoton(250, 266, 50, 40, "<", pag > 0 ? BRONQUITO_CYAN : COLOR_TEXTO_GRIS);
+      dibujarBoton(380, 266, 50, 40, ">", pag < paginas - 1 ? BRONQUITO_CYAN : COLOR_TEXTO_GRIS);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextSize(2);
+      tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
+      escribir(String(pag + 1) + "/" + String(paginas), 340, 286);
+    }
+    tft.setTextDatum(TL_DATUM);
+  };
+  dibujarPagina();
+
+  while (true) {
+    int x, y;
+    if (!leerToque(x, y)) continue;
+
+    if (dentro(x, y, 10, 266, 150, 40)) { pagina = pag; return -1; }
+
+    if (paginas > 1) {
+      if (dentro(x, y, 250, 266, 50, 40) && pag > 0)            { pag--; dibujarPagina(); continue; }
+      if (dentro(x, y, 380, 266, 50, 40) && pag < paginas - 1)  { pag++; dibujarPagina(); continue; }
+    }
+
+    for (int i = 0; i < POR_PAG; i++) {
+      int idx = pag * POR_PAG + i;
+      if (idx >= n) break;
+      if (dentro(x, y, 375, FILA_Y + i * FILA_P, 95, FILA_H)) { pagina = pag; return idx; }
+    }
+  }
+}
+
+void BronquitoUI::mostrarResumenEntrenamiento(const String *titulos, const String &fecha, const MetricaItem *m,
+                                              const int *porPagina, int paginas, const String &pie) {
+  hasDot = false;
+  if (paginas < 1) return;
+
+  // Botones abajo a la izquierda; el pie (cómo terminó) a la derecha, como en mostrarResumenCalibracion
+  const int vx = 15, vw = 130, sx = 153, sw = 150;
+  int pag = 0;
+
+  auto dibujarPagina = [&]() {
+    int desde = 0;
+    for (int k = 0; k < pag; k++) desde += porPagina[k];
+    int n = porPagina[pag];
+    if (n > 8) n = 8;
+    const bool compacto = (n > 6);   // 4 filas más bajas en lugar de 3
+
+    tft.fillScreen(COLOR_FONDO);
+    tft.fillRect(0, 0, 480, 45, BRONQUITO_CYAN);
+    tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
+    tft.setTextSize(2);
+    tft.setTextDatum(ML_DATUM);
+    escribir(paginas > 1 ? titulos[pag] + " " + String(pag + 1) + "/" + String(paginas) : titulos[pag], 15, 23);
+    tft.setTextDatum(MR_DATUM);
+    escribir(fecha, 465, 23);
+
+    const int TW = 215, TH = compacto ? 46 : 62, PASO = compacto ? 50 : 68;
+    const int Y_VALOR = compacto ? 18 : 28, Y_UNIDAD = compacto ? 25 : 36, Y_ETIQUETA = compacto ? 5 : 8;
+    for (int i = 0; i < n; i++) {
+      const MetricaItem &it = m[desde + i];
+      int x = (i % 2 == 0) ? 15 : 250;
+      int y = 54 + (i / 2) * PASO;
+
+      tft.fillRoundRect(x, y, TW, TH, 8, COLOR_TARJETA_BG);
+      tft.drawRoundRect(x, y, TW, TH, 8, BRONQUITO_CYAN);
+
+      tft.setTextDatum(TL_DATUM);
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_TARJETA_BG);
+      escribir(it.etiqueta, x + 12, y + Y_ETIQUETA);
+
+      tft.setTextSize(3);
+      tft.setTextColor(BRONQUITO_CYAN, COLOR_TARJETA_BG);
+      escribir(it.valor, x + 12, y + Y_VALOR);
+      int w = tft.textWidth(paraPantalla(it.valor));
+
+      tft.setTextSize(2);
+      tft.setTextColor(BRONQUITO_BROWN, COLOR_TARJETA_BG);
+      escribir(it.unidad, x + 12 + w + 6, y + Y_UNIDAD);
+    }
+
+    if (pie.length() > 0) {
+      int k = pie.indexOf(" | ");
+      String l1 = (k < 0) ? pie : pie.substring(0, k);
+      String l2 = (k < 0) ? String("") : pie.substring(k + 3);
+      tft.setTextDatum(MC_DATUM);
+      tft.setTextSize(1);
+      tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
+      escribir(l1, 395, 272);
+      escribir(l2, 395, 290);
+    }
+    dibujarBoton(vx, 258, vw, 46, "Volver", COLOR_TEXTO_GRIS);
+    if (paginas > 1) dibujarBoton(sx, 258, sw, 46, "Siguiente", BRONQUITO_CYAN);
+    tft.setTextDatum(TL_DATUM);
+  };
+  dibujarPagina();
+
+  while (true) {
+    int x, y;
+    if (!leerToque(x, y)) continue;
+    if (dentro(x, y, vx, 258, vw, 46)) return;
+    if (paginas > 1 && dentro(x, y, sx, 258, sw, 46)) {
+      pag = (pag + 1) % paginas;
+      dibujarPagina();
+    }
+  }
+}
+
 // ======================= GRÁFICOS =======================
 
 // Paso "redondo" (1, 2 o 5 x 10^k) para que el eje tenga ~objetivo divisiones
@@ -1345,6 +1506,33 @@ void BronquitoUI::setHintPim(const String &texto) {
   tft.setTextColor(BRONQUITO_BROWN, COLOR_CAMPO_BG);
   escribir(texto, 240, 207);
   tft.setTextPadding(0);
+  tft.setTextDatum(TL_DATUM);
+}
+
+void BronquitoUI::drawTrainingRunning() {
+  cancelArmado = false;
+  hasDot = false;
+  tft.fillScreen(COLOR_FONDO);
+
+  tft.fillRect(0, 0, 480, 40, BRONQUITO_CYAN);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
+  tft.setTextSize(2);
+  escribir("Entrenamiento en curso", 15, 20);
+
+  tft.fillRoundRect(30, 55, 420, 175, 10, COLOR_CAMPO_BG);
+  tft.drawRoundRect(30, 55, 420, 175, 10, BRONQUITO_CYAN);
+
+  // Pantalla fija durante la medición (no se actualiza: escribir frena el muestreo y mueve el cero de
+  // los sensores). Los ciclos se cuentan igual, pero no se muestran.
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextSize(2);
+  tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_CAMPO_BG);
+  escribir("Inspirá fuerte y profundo,", 240, 90);
+  escribir("espirá todo y repetí.", 240, 120);
+  setHintPim("Espere... no respire");   // se cambia por "Ya puede empezar" recién terminada la tara
+
+  dibujarBoton(120, 245, 240, 50, "Detener", COLOR_ROJO_DEL);
   tft.setTextDatum(TL_DATUM);
 }
 

@@ -107,10 +107,17 @@ public:
   int pedirFrecuencia(const String& usuario, JsonDocument& resp);
   // POST /dispositivo/frecuencia/confirmar
   void confirmarFrecuencia(JsonVariantConst idFrecuencia);
+  // POST /dispositivo/resistencia/confirmar: el equipo guardó la "resistencia_web" con ese id
+  void confirmarResistencia(JsonVariantConst idResistencia);
 
   // POST /dispositivo/evaluaciones: sube una prueba de la SD (el cuerpo lo arma TarjetaSD::armarEnvio).
   // Devuelve el código HTTP. Si la web contesta un error, queda en resp["error"]
   int subirEvaluacion(const String& cuerpo, JsonDocument& resp);
+  // POST /dispositivo/entrenamientos: el .json de una sesión (cuerpo de TarjetaSD::armarEnvioEntrenamiento)
+  int subirEntrenamiento(const String& cuerpo, JsonDocument& resp);
+  // POST /dispositivo/entrenamientos/csv?usuario=..&archivo=..: el .csv de esa sesión tal cual está en la SD
+  // (text/csv). Se manda leyéndolo del archivo, sin cargarlo en RAM (puede tener cientos de KB)
+  int subirCsvEntrenamiento(const String& usuario, const String& archivo, Stream& csv, size_t tam, JsonDocument& resp);
 
   // Texto corto (sin acentos) para mostrar en pantalla según el código de llamarApi
   String textoError(int http);
