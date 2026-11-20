@@ -46,7 +46,9 @@ const int ESPIRACION  = -1;
 const int REPOSO      = 0;
 
 // ---- Parámetros (mismos nombres y valores que en deteccion_respiracion.py) ----
-const float  SIGNO_PRESION_INSPIRACION = 1.0f;   // placa actual: presión positiva al inspirar
+// RespiratorySensors da la presión con signo físico (negativa al inspirar). Este signo la da vuelta para que,
+// dentro de este análisis y en el .json, la inspiración sea positiva (PIM > 0, PEM < 0), como antes.
+const float  SIGNO_PRESION_INSPIRACION = -1.0f;
 const int    HAMPEL_VENTANA        = 5;          // ±5 muestras (±50 ms a 100 Hz)
 const float  HAMPEL_N_SIGMA        = 3.0f;
 const float  HAMPEL_SIGMA_MIN_LMIN = 10.0f;
@@ -58,10 +60,12 @@ const double CMH2O_L_A_J           = 98.0665e-3; // 1 cmH2O·L = 98,0665 Pa × 0
 // ---- Detección por presión (en vivo y al guardar) ----
 const double CALIBRACION_INI_S          = 0.2;   // ventana de reposo inicial para el cero de presión
 const double CALIBRACION_FIN_S          = 1.0;
-const float  CALIBRACION_DISPERSION_MAX = 5.0f;  // p90 − p10 de la presión en esa ventana; más = no era reposo
-const float  P_BANDA_CMH2O              = 5.0f;  // banda de reposo: |P| menor que esto es "sin esfuerzo"
-const float  P_RUIDO_CMH2O              = 2.0f;  // dónde empieza/termina una fase cuando hay pausa
-const double IMPULSO_MIN                = 2.0;   // cmH2O·s: ∫|P| dt mínimo para confirmar una fase
+// Umbrales de presión escalados por 120,15 / 421,35 = 0,285 al calibrar la K de la PIM (antes 5, 5, 2 y 2):
+// la misma señal en voltios ahora vale 0,285 veces menos cmH2O.
+const float  CALIBRACION_DISPERSION_MAX = 1.43f; // p90 − p10 de la presión en esa ventana; más = no era reposo
+const float  P_BANDA_CMH2O              = 1.43f; // banda de reposo: |P| menor que esto es "sin esfuerzo"
+const float  P_RUIDO_CMH2O              = 0.57f; // dónde empieza/termina una fase cuando hay pausa
+const double IMPULSO_MIN                = 0.57;  // cmH2O·s: ∫|P| dt mínimo para confirmar una fase
 const double VOL_MIN_L                  = 0.15;  // volumen mínimo de una fase (con el flujo corregido)
 const double PAUSA_MIN_S                = 0.15;  // |P| en la banda al menos esto entre dos fases = pausa real
 const double UNION_MISMO_SENTIDO_S      = 0.5;   // fases del mismo sentido separadas por menos se unen
@@ -586,7 +590,7 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
     e.flujoPico_Lmin = L(iPico);
     e.tPico_s = (float)T(iPico);
     e.volumen_L = (float)vol;
-    e.presionPico_cmH2O = SIGNO_PRESION_INSPIRACION * PF(iPres);
+    e.presionPico_cmH2O = PF(iPres);   // convención del análisis: PIM > 0, PEM < 0
     e.tPresionPico_s = (float)T(iPres);
     eventos.push_back(e);
   }
