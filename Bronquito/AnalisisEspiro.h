@@ -79,6 +79,9 @@ struct EventoEspiratorio {
   float fvc_L, fev1_L;               // volumen total y a 1 s de t0
   float pef_Lmin, tPef_s;            // flujo pico y cuánto tardó en alcanzarlo desde t0
   float bev_L;                       // volumen extrapolado retrógradamente (exhalado antes de t0)
+  // Cola extrapolada: fvc_L = fvcMedido_L + volCola_L (volCola_L = 0 si no se pudo o no correspondía)
+  float fvcMedido_L;                 // volumen integrado hasta donde el flujo se pierde en el ruido
+  float volCola_L, tauCola_s;        // volumen agregado por la cola y su constante de tiempo (0 = sin ajuste)
   // Inspiración que sigue a la espiración (NAN / false si no se detectó)
   bool  hayInspiracion;
   int   idxInicioInsp, idxFinInsp, idxPif;
@@ -132,6 +135,20 @@ namespace AnalisisEspiro {
   const float INICIO_MAX_S    = 5.0f;    // E1: desde que aparece "Exhale e inhale con fuerza" (t = 0 de la captura) hasta t0 extrapolado
   const float BEV_MIN_L       = 0.100f;  // E2: BEV <= max(BEV_MIN_L, BEV_FRACCION * FVC)  (ATS/ERS 2019)
   const float BEV_FRACCION    = 0.05f;
+
+  // ---- COLA DE LA ESPIRACIÓN EXTRAPOLADA (21/11/2026) ----
+  // Con flujos bajos la tensión del venturi (que va con el flujo al cuadrado) queda dentro del ruido: el
+  // soplido se corta antes de terminar y el FVC sale bajo (-5,5 % en la base de prueba). Se ajusta
+  // Q(t) = Qf * exp(-(t - tFin) / tau) al último tramo medible de la cola y se suma el volumen que faltó,
+  // SOLO hasta que empieza la inspiración (o termina la captura): no se suma aire de cuando ya se inspiraba.
+  // Cambia solo el FVC informado (y lo que depende de él: FEV1/FVC, % del predicho, E2). La curva
+  // guardada y graficada sigue siendo la medida; el .json guarda aparte el FVC medido y el volumen agregado.
+  const bool  EXTRAPOLAR_COLA      = true;
+  const float COLA_VENTANA_S       = 1.0f;   // tramo para el ajuste: el último segundo antes del corte...
+  const float COLA_Q_MAX_LMIN      = 60.0f;  // ...con flujo por debajo de esto (la cola, no la bajada después del pico)
+  const float COLA_PISO_FRACCION   = 0.5f;   // ...y por encima de esta fracción del flujo del umbral de ruido
+  const int   COLA_MIN_MUESTRAS    = 10;     // menos puntos (0,1 s) = cola demasiado corta para ajustar
+  const float COLA_MAX_FRACCION    = 0.10f;  // lo agregado nunca supera el 10 % del volumen medido
 }
 
 // M necesita: tiempo_s, vFlujo_V, presion_cmH2O, flujo_Lmin, volumen_L, fase
@@ -480,10 +497,44 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
     }
   }
 
+  // 7b) Cola extrapolada (ver EXTRAPOLAR_COLA). Se hace después de la inspiración porque hace falta saber
+  //     cuándo empezó: la cola se integra solo hasta ahí.
+  ev.fvcMedido_L = vol;
+  ev.volCola_L = 0.0f;
+  ev.tauCola_s = 0.0f;
+  if (EXTRAPOLAR_COLA) {
+    // a) Ajuste de ln(Q) contra t (recta por mínimos cuadrados) en el último tramo de la cola
+    const float qPiso = COLA_PISO_FRACCION * kEspiracion * sqrtf(umbral) * factorBTPS;
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    int nn = 0;
+    for (int k = fin; k > idxPef && tFin - b[k].tiempo_s <= COLA_VENTANA_S; k--) {
+      if (q[k] <= qPiso || q[k] >= COLA_Q_MAX_LMIN) continue;   // fuera de la cola o hundido en el ruido
+      double x = b[k].tiempo_s - tFin, y = log((double)q[k]);
+      sx += x; sy += y; sxx += x * x; sxy += x * y; nn++;
+    }
+    double den = nn * sxx - sx * sx;
+    if (nn >= COLA_MIN_MUESTRAS && den > 0.0) {
+      double pend = (nn * sxy - sx * sy) / den;                  // = -1 / tau
+      double qf = exp((sy - pend * sx) / nn);                    // flujo de la cola en tFin
+      // b) Solo si el flujo venía bajando y la cola es una cola (si en el corte había mucho flujo,
+      //    el soplido se interrumpió: extrapolar sería inventar volumen)
+      if (pend < 0.0 && qf <= COLA_Q_MAX_LMIN) {
+        double tau = -1.0 / pend;
+        float tLibre = (ev.hayInspiracion ? ev.tInicioInsp_s : b[n - 1].tiempo_s) - tFin;
+        if (tLibre > 0.0f) {
+          double extra = qf / 60.0 * tau * (1.0 - exp(-tLibre / tau));   // integral de la exponencial
+          ev.volCola_L = (float)std::min(extra, (double)(COLA_MAX_FRACCION * vol));
+          ev.tauCola_s = (float)tau;
+        }
+      }
+    }
+  }
+  ev.fvc_L = vol + ev.volCola_L;
+
   // 8) Criterios de aceptación (se informa el primero que falla). E3 (FIVC > FVC) no se evalúa todavía.
   if (!VALIDAR)                                            ev.codigo = ESPIRO_OK;
   else if (t0 - b[0].tiempo_s > INICIO_MAX_S)             ev.codigo = ESPIRO_E1_INICIO_TARDIO;
-  else if (bev > std::max(BEV_MIN_L, BEV_FRACCION * vol)) ev.codigo = ESPIRO_E2_BEV_ALTO;
+  else if (bev > std::max(BEV_MIN_L, BEV_FRACCION * ev.fvc_L)) ev.codigo = ESPIRO_E2_BEV_ALTO;
   else                                                    ev.codigo = ESPIRO_OK;
 
   ev.valido = (ev.codigo == ESPIRO_OK);

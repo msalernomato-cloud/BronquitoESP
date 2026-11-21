@@ -75,6 +75,8 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
                     ev.tInicio_s, ev.tFin_s, ev.t0_s, ev.duracion_s);
       Serial.printf("[CAL]   FVC=%.2f L, FEV1=%.2f L, PEF=%.0f L/min, BEV=%.3f L (factor BTPS %.4f)\n",
                     ev.fvc_L, ev.fev1_L, ev.pef_Lmin, ev.bev_L, ev.factorBTPS);
+      Serial.printf("[CAL]   FVC medido=%.2f L + cola extrapolada=%.0f mL (tau=%.2f s)\n",
+                    ev.fvcMedido_L, ev.volCola_L * 1000.0f, ev.tauCola_s);
       if (ev.hayInspiracion)
         Serial.printf("[CAL] Inspiración: integra %.2f-%.2f s | t0=%.2f s | FIVC=%.2f L, FIV1=%.2f L, PIF=%.0f L/min\n",
                       ev.tInicioInsp_s, ev.tFinInsp_s, ev.t0Insp_s, ev.fivc_L, ev.fiv1_L, ev.pif_Lmin);
