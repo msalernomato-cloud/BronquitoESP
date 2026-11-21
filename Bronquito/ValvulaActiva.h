@@ -16,13 +16,15 @@ class ValvulaActiva {
 public:
   static constexpr float DC_ABIERTA = 8.0f;   // sin resistencia (evaluación)
   static constexpr float DC_CERRADA = 2.0f;   // oclusión total
+  // Menos DC = más cerrada. Nivel 1 (resistencia mínima) = el más cerca de abierta; nivel 5 = el más
+  // cerca de cerrada.
   static constexpr float DC_NIVEL[6] = {
     DC_ABIERTA,   // 0: sin nivel -> abierta
-    3.0f,         // 1: resistencia mínima
-    3.5f,         // 2
+    4.25f,        // 1: resistencia mínima (la más abierta de las cinco)
+    4.1f,         // 2
     4.0f,         // 3
-    4.1f,         // 4
-    4.25f,        // 5: resistencia máxima (sin llegar a cerrada)
+    3.5f,         // 4
+    3.0f,         // 5: resistencia máxima (sin llegar a cerrada)
   };
   static const uint32_t ESPERA_MOVIMIENTO_MS = 700;   // lo que tarda el servo en llegar a la posición
 

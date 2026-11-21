@@ -158,6 +158,15 @@ void FlujoEntrenamiento::ejecutar() {
   // 6) Procesar: se relee la señal de la SD y se calculan las features (como el Python, con toda la
   //    captura). Si no hay memoria se guarda igual, con las features en null.
   ui.mostrarMensaje("Procesando y guardando...", "No retires la tarjeta SD");
+
+  // Si el DHT22 no se pudo leer al empezar, se prueba de nuevo ahora (muestreo apagado y sin pedidos a la
+  // web en curso). Si anda, esa temperatura, humedad y factor BTPS van al análisis y al .json.
+  if (!amb.valida) {
+    Serial.println("[BTPS] Se vuelve a leer el DHT22 antes de procesar");
+    amb = leerAmbiente();
+    if (amb.valida) conv.factorBTPS = amb.factor_btps;
+  }
+
   uint32_t tProc = millis();
   AnalisisEntrenamiento::FeaturesEntrenamiento features;
   bool hayFeatures = false;

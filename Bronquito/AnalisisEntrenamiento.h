@@ -52,7 +52,7 @@ const float  HAMPEL_N_SIGMA        = 3.0f;
 const float  HAMPEL_SIGMA_MIN_LMIN = 10.0f;
 const float  V_BAJO_CERO_MAX_V     = 0.020f;     // v_flujo más de 20 mV bajo su cero = falla del sensor
 const int    MARGEN_REPARACION     = 5;
-const double MAX_PAUSA_CICLO_S     = 2.0;
+const double MAX_PAUSA_CICLO_S     = 3.0;   // el Python tiene 2,0: subido para cuando sostienen el aire arriba
 const double CMH2O_L_A_J           = 98.0665e-3; // 1 cmH2O·L = 98,0665 Pa × 0,001 m³ = 0,0981 J
 
 // ---- Detección por presión (en vivo y al guardar) ----
@@ -125,7 +125,9 @@ struct SenalEntrenamiento {
 
 // Bytes de RAM que necesita analizar() además de la señal (para revisar la memoria antes)
 inline size_t memoriaAnalisis(size_t n) {
-  return n * (2 /*limpio*/ + 2 /*con signo*/ + 4 /*magnitudes*/ + 1 /*fase*/ + 3 * 2 /*copias para medianas*/) + 8192;
+  // Lo que más pide es buscar el cero de la presión cuando el primer segundo no fue reposo: 4 copias de la
+  // presión (2 bytes c/u), con lugar para que una crezca. Después: fase (1) + flujo limpio (2).
+  return n * 8 + 8192;
 }
 inline size_t memoriaSenal(size_t n) { return n * (4 + 2 + 2 + 2); }
 
@@ -513,28 +515,51 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
   // a) Signo y K de la fase, y BTPS. Las rachas cortas (≤ MAX_INVERTIDAS) de signo invertido dentro de una
   //    fase (el equipo eligió mal el sentido y la K cerca de presión 0, ej. 68, −122, 72 en una espiración)
   //    se reemplazan interpolando entre las muestras buenas vecinas. En reposo: el flujo del equipo × BTPS.
-  std::vector<int16_t> conSigno(n);
+  //    Se escribe ENCIMA del flujo de la señal (s.flujo): de acá en adelante el flujo del equipo ya no se
+  //    usa, y así no hace falta otro vector del tamaño de la señal. Se recorre de izquierda a derecha y
+  //    cada valor original se lee antes de pisarlo (mPrev guarda la magnitud de la muestra anterior).
   {
     auto invertida = [&](int k) {
       return fase[k] != REPOSO && s.flujo[k] != 0 && (s.flujo[k] > 0) == (fase[k] == INSPIRACION);
     };
-    std::vector<float> m(n);
-    for (int k = 0; k < n; k++) m[k] = fase[k] == REPOSO ? 0.0f : conv.magnitud(Q(k), fase[k]);
+    auto escribir = [&](int j, float mag) {
+      s.flujo[j] = SenalEntrenamiento::a16((fase[j] == INSPIRACION ? -mag : mag) * ESCALA_FLUJO);
+    };
+    float mPrev = 0.0f;   // magnitud (K de la fase y BTPS) de la muestra k - 1, antes de pisarla
     int k = 0;
     while (k < n) {
-      if (!invertida(k)) { k++; continue; }
+      if (fase[k] == REPOSO) {
+        s.flujo[k] = SenalEntrenamiento::a16(Q(k) * conv.factorBTPS * ESCALA_FLUJO);
+        mPrev = 0.0f;
+        k++;
+        continue;
+      }
+      if (!invertida(k)) {
+        float mk = conv.magnitud(Q(k), fase[k]);
+        escribir(k, mk);
+        mPrev = mk;
+        k++;
+        continue;
+      }
       int f = fase[k], a = k;
       while (k < n && fase[k] == f && invertida(k)) k++;
       int z = k - 1;
-      if (z - a + 1 > MAX_INVERTIDAS) continue;   // racha larga: solo se corrige el signo (y la K)
       bool hayIzq = a > 0 && fase[a - 1] == f, hayDer = z + 1 < n && fase[z + 1] == f;
-      if (!hayIzq && !hayDer) continue;
-      float izq = hayIzq ? m[a - 1] : m[z + 1], der = hayDer ? m[z + 1] : izq;
-      for (int j = a; j <= z; j++) m[j] = izq + (float)(j - a + 1) / (z - a + 2) * (der - izq);
-    }
-    for (int j = 0; j < n; j++) {
-      float x = fase[j] == INSPIRACION ? -m[j] : fase[j] == ESPIRACION ? m[j] : Q(j) * conv.factorBTPS;
-      conSigno[j] = SenalEntrenamiento::a16(x * ESCALA_FLUJO);
+      if (z - a + 1 <= MAX_INVERTIDAS && (hayIzq || hayDer)) {
+        float mDer = hayDer ? conv.magnitud(Q(z + 1), f) : 0.0f;   // z + 1 todavía no se pisó
+        float izq = hayIzq ? mPrev : mDer, der = hayDer ? mDer : izq;
+        for (int j = a; j <= z; j++) {
+          float mj = izq + (float)(j - a + 1) / (z - a + 2) * (der - izq);
+          escribir(j, mj);
+          mPrev = mj;
+        }
+      } else {   // racha larga (o sin vecinas de la fase): solo se corrige el signo (y la K)
+        for (int j = a; j <= z; j++) {
+          float mj = conv.magnitud(Q(j), f);
+          escribir(j, mj);
+          mPrev = mj;
+        }
+      }
     }
   }
   // b) Hampel DENTRO de cada tramo de fase constante: si la ventana mezclara la fase vecina (de signo
@@ -547,19 +572,18 @@ inline bool analizar(SenalEntrenamiento &s, FeaturesEntrenamiento &out,
       if (fin < n && fase[fin] == fase[ini]) continue;
       for (int i = ini; i < fin; i++) {
         int a = std::max(ini, i - HAMPEL_VENTANA), z = std::min(fin - 1, i + HAMPEL_VENTANA), m = z - a + 1;
-        for (int j = 0; j < m; j++) w[j] = conSigno[a + j] / ESCALA_FLUJO;
+        for (int j = 0; j < m; j++) w[j] = s.flujo[a + j] / ESCALA_FLUJO;
         std::sort(w, w + m);
         float med = w[m / 2];
         for (int j = 0; j < m; j++) dv[j] = fabsf(w[j] - med);
         std::sort(dv, dv + m);
         float sigma = std::max(HAMPEL_SIGMA_MIN_LMIN, 1.4826f * dv[m / 2]);
-        float x = conSigno[i] / ESCALA_FLUJO;
+        float x = s.flujo[i] / ESCALA_FLUJO;
         limpio[i] = SenalEntrenamiento::a16((fabsf(x - med) > HAMPEL_N_SIGMA * sigma ? med : x) * ESCALA_FLUJO);
       }
       ini = fin;
     }
   }
-  std::vector<int16_t>().swap(conSigno);
   auto L = [&](int k) { return fabsf(limpio[k] / ESCALA_FLUJO); };
 
   // ---- Eventos ----
