@@ -7,7 +7,7 @@
 // El sensor es un venturi: la garganta siempre tiene menos presión que la entrada, venga el aire
 // de un lado o del otro. dV = vFlujo_V - vZero es positivo tanto al soplar como al inspirar, así que
 // NO indica el sentido del flujo. El sentido lo da el sensor de presión de la boquilla (con la placa
-// actual: presión positiva = inspiración, negativa = espiración; ver SIGNO_PRESION_ESPIRACION).
+// actual: presión negativa = inspiración, positiva = espiración; ver SIGNO_PRESION_ESPIRACION).
 // Se decide por EVENTO (todo el tramo con flujo toma el
 // signo del promedio de la presión), así el ruido de la presión no lo cambia a mitad de un soplido.
 //
@@ -79,6 +79,9 @@ struct EventoEspiratorio {
   float fvc_L, fev1_L;               // volumen total y a 1 s de t0
   float pef_Lmin, tPef_s;            // flujo pico y cuánto tardó en alcanzarlo desde t0
   float bev_L;                       // volumen extrapolado retrógradamente (exhalado antes de t0)
+  // Cola extrapolada: fvc_L = fvcMedido_L + volCola_L (volCola_L = 0 si no se pudo o no correspondía)
+  float fvcMedido_L;                 // volumen integrado hasta donde el flujo se pierde en el ruido
+  float volCola_L, tauCola_s;        // volumen agregado por la cola y su constante de tiempo (0 = sin ajuste)
   // Inspiración que sigue a la espiración (NAN / false si no se detectó)
   bool  hayInspiracion;
   int   idxInicioInsp, idxFinInsp, idxPif;
@@ -91,18 +94,22 @@ struct EventoEspiratorio {
 };
 
 namespace AnalisisEspiro {
-  // ---- MODO PRUEBA ----
-  // false = sin validaciones: no se rechaza ninguna maniobra (no hay E1, E2, E5 por pico bajo, E6, E7
-  // ni E8) y la inspiración se busca sin el límite de 3 s. Fuera de la espiración y de la inspiración
-  // el flujo queda en cero (no se ve el ruido). Poner en true para volver a validar.
-  const bool  VALIDAR         = false;
+  // ---- VALIDACIONES ----
+  // true = se validan E1, E2, E5, E6, E7 y E8 (E3 no está implementada). false = modo prueba: no se
+  // rechaza ninguna maniobra. Fuera de la espiración y de la inspiración el flujo queda en cero.
+  const bool  VALIDAR         = true;
+  // Límite de INSP_DEMORA_MAX_S entre el fin de la espiración y el comienzo de la inspiración.
+  // APAGADO (20/11/2026): el fin de la espiración se toma donde el flujo se pierde en el ruido, que en
+  // soplidos largos queda varios segundos antes del final real, y descartaba inspiraciones válidas
+  // (79 % de las maniobras de la base de prueba). No se usa hasta medir la demora de otra forma.
+  const bool  VALIDAR_DEMORA_INSP = false;
 
   // ---- SENTIDO DE LA PRESIÓN ----
-  // Signo que tiene la presión de la boquilla al ESPIRAR. En la placa actual las tomas del sensor de
-  // presión quedaron ruteadas al revés: la presión manométrica da POSITIVA al inspirar (la PIM sale
-  // positiva) y NEGATIVA al espirar. Convención: presión > 0 = inspiración, presión < 0 = espiración.
-  // Si se corrige la placa, poner +1. (RespiratorySensors usa esta misma constante.)
-  const float SIGNO_PRESION_ESPIRACION = -1.0f;
+  // Signo que tiene la presión de la boquilla al ESPIRAR. Desde el 20/11/2026 RespiratorySensors invierte
+  // la señal (SIGNO_PRESION = -1) para usar la convención física: presión POSITIVA al espirar y NEGATIVA
+  // al inspirar (vacío). Por eso acá va +1. Si se cambia SIGNO_PRESION, cambiar también este signo.
+  // (RespiratorySensors usa esta misma constante.)
+  const float SIGNO_PRESION_ESPIRACION = 1.0f;
 
   const float PICO_MIN_LMIN   = 120.0f;  // E5: PEF mínimo para considerar que hubo un soplido
   const float N_SIGMA         = 3.0f;    // umbral de inicio/fin = N_SIGMA * ruido
@@ -128,6 +135,20 @@ namespace AnalisisEspiro {
   const float INICIO_MAX_S    = 5.0f;    // E1: desde que aparece "Exhale e inhale con fuerza" (t = 0 de la captura) hasta t0 extrapolado
   const float BEV_MIN_L       = 0.100f;  // E2: BEV <= max(BEV_MIN_L, BEV_FRACCION * FVC)  (ATS/ERS 2019)
   const float BEV_FRACCION    = 0.05f;
+
+  // ---- COLA DE LA ESPIRACIÓN EXTRAPOLADA (21/11/2026) ----
+  // Con flujos bajos la tensión del venturi (que va con el flujo al cuadrado) queda dentro del ruido: el
+  // soplido se corta antes de terminar y el FVC sale bajo (-5,5 % en la base de prueba). Se ajusta
+  // Q(t) = Qf * exp(-(t - tFin) / tau) al último tramo medible de la cola y se suma el volumen que faltó,
+  // SOLO hasta que empieza la inspiración (o termina la captura): no se suma aire de cuando ya se inspiraba.
+  // Cambia solo el FVC informado (y lo que depende de él: FEV1/FVC, % del predicho, E2). La curva
+  // guardada y graficada sigue siendo la medida; el .json guarda aparte el FVC medido y el volumen agregado.
+  const bool  EXTRAPOLAR_COLA      = true;
+  const float COLA_VENTANA_S       = 1.0f;   // tramo para el ajuste: el último segundo antes del corte...
+  const float COLA_Q_MAX_LMIN      = 60.0f;  // ...con flujo por debajo de esto (la cola, no la bajada después del pico)
+  const float COLA_PISO_FRACCION   = 0.5f;   // ...y por encima de esta fracción del flujo del umbral de ruido
+  const int   COLA_MIN_MUESTRAS    = 10;     // menos puntos (0,1 s) = cola demasiado corta para ajustar
+  const float COLA_MAX_FRACCION    = 0.10f;  // lo agregado nunca supera el 10 % del volumen medido
 }
 
 // M necesita: tiempo_s, vFlujo_V, presion_cmH2O, flujo_Lmin, volumen_L, fase
@@ -411,7 +432,7 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
       float tUlt = tFin;
       for (int k2 = segIni[e] - 1; k2 > fin; k2--)
         if (signo[k2] > 0 && fabsf(d[k2]) > umbral) { tUlt = b[k2].tiempo_s; break; }
-      if (VALIDAR && b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
+      if (VALIDAR && VALIDAR_DEMORA_INSP && b[segIni[e]].tiempo_s - tUlt > INSP_DEMORA_MAX_S) continue;
       float pico = 0.0f;
       for (int k2 = segIni[e]; k2 <= segFin[e]; k2++) pico = std::max(pico, si(k2));
       if (pico > mejorPico) { mejorPico = pico; elegido = (int)e; }
@@ -476,10 +497,44 @@ EventoEspiratorio analizarEventoEspiratorio(std::vector<M> &b, float vZero, floa
     }
   }
 
+  // 7b) Cola extrapolada (ver EXTRAPOLAR_COLA). Se hace después de la inspiración porque hace falta saber
+  //     cuándo empezó: la cola se integra solo hasta ahí.
+  ev.fvcMedido_L = vol;
+  ev.volCola_L = 0.0f;
+  ev.tauCola_s = 0.0f;
+  if (EXTRAPOLAR_COLA) {
+    // a) Ajuste de ln(Q) contra t (recta por mínimos cuadrados) en el último tramo de la cola
+    const float qPiso = COLA_PISO_FRACCION * kEspiracion * sqrtf(umbral) * factorBTPS;
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    int nn = 0;
+    for (int k = fin; k > idxPef && tFin - b[k].tiempo_s <= COLA_VENTANA_S; k--) {
+      if (q[k] <= qPiso || q[k] >= COLA_Q_MAX_LMIN) continue;   // fuera de la cola o hundido en el ruido
+      double x = b[k].tiempo_s - tFin, y = log((double)q[k]);
+      sx += x; sy += y; sxx += x * x; sxy += x * y; nn++;
+    }
+    double den = nn * sxx - sx * sx;
+    if (nn >= COLA_MIN_MUESTRAS && den > 0.0) {
+      double pend = (nn * sxy - sx * sy) / den;                  // = -1 / tau
+      double qf = exp((sy - pend * sx) / nn);                    // flujo de la cola en tFin
+      // b) Solo si el flujo venía bajando y la cola es una cola (si en el corte había mucho flujo,
+      //    el soplido se interrumpió: extrapolar sería inventar volumen)
+      if (pend < 0.0 && qf <= COLA_Q_MAX_LMIN) {
+        double tau = -1.0 / pend;
+        float tLibre = (ev.hayInspiracion ? ev.tInicioInsp_s : b[n - 1].tiempo_s) - tFin;
+        if (tLibre > 0.0f) {
+          double extra = qf / 60.0 * tau * (1.0 - exp(-tLibre / tau));   // integral de la exponencial
+          ev.volCola_L = (float)std::min(extra, (double)(COLA_MAX_FRACCION * vol));
+          ev.tauCola_s = (float)tau;
+        }
+      }
+    }
+  }
+  ev.fvc_L = vol + ev.volCola_L;
+
   // 8) Criterios de aceptación (se informa el primero que falla). E3 (FIVC > FVC) no se evalúa todavía.
   if (!VALIDAR)                                            ev.codigo = ESPIRO_OK;
   else if (t0 - b[0].tiempo_s > INICIO_MAX_S)             ev.codigo = ESPIRO_E1_INICIO_TARDIO;
-  else if (bev > std::max(BEV_MIN_L, BEV_FRACCION * vol)) ev.codigo = ESPIRO_E2_BEV_ALTO;
+  else if (bev > std::max(BEV_MIN_L, BEV_FRACCION * ev.fvc_L)) ev.codigo = ESPIRO_E2_BEV_ALTO;
   else                                                    ev.codigo = ESPIRO_OK;
 
   ev.valido = (ev.codigo == ESPIRO_OK);

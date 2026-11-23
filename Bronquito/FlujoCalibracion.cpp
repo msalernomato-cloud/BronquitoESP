@@ -75,6 +75,8 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
                     ev.tInicio_s, ev.tFin_s, ev.t0_s, ev.duracion_s);
       Serial.printf("[CAL]   FVC=%.2f L, FEV1=%.2f L, PEF=%.0f L/min, BEV=%.3f L (factor BTPS %.4f)\n",
                     ev.fvc_L, ev.fev1_L, ev.pef_Lmin, ev.bev_L, ev.factorBTPS);
+      Serial.printf("[CAL]   FVC medido=%.2f L + cola extrapolada=%.0f mL (tau=%.2f s)\n",
+                    ev.fvcMedido_L, ev.volCola_L * 1000.0f, ev.tauCola_s);
       if (ev.hayInspiracion)
         Serial.printf("[CAL] Inspiración: integra %.2f-%.2f s | t0=%.2f s | FIVC=%.2f L, FIV1=%.2f L, PIF=%.0f L/min\n",
                       ev.tInicioInsp_s, ev.tFinInsp_s, ev.t0Insp_s, ev.fivc_L, ev.fiv1_L, ev.pif_Lmin);
@@ -92,7 +94,7 @@ void FlujoCalibracion::calibracionCancelada(const String &calibId) {
   tarjeta.borrarTemporalesPIM();
   if (calibId.length() > 0) tarjeta.borrarCalibracion(calibId);
   Serial.println("[CAL] Cancelada: no se guarda nada");
-  ui.mostrarMensaje("Calibración cancelada", "No se guardó nada", COLOR_ROJO_DEL);
+  ui.mostrarMensaje("Evaluación cancelada", "No se guardó nada", COLOR_ROJO_DEL);
   delay(1500);
 }
 
@@ -261,7 +263,7 @@ void FlujoCalibracion::ejecutar() {
                                           "Terminar", "Repetir", COLOR_TEXTO_GRIS, BRONQUITO_CYAN);
       if (repetir) continue;
       Serial.printf("[CAL] Terminada con la espirometría inválida (E%d)\n", evEsp.codigo);
-      ui.mostrarMensaje("Calibración guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
+      ui.mostrarMensaje("Evaluación guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
       delay(1800);
       return;
     }
@@ -289,6 +291,6 @@ void FlujoCalibracion::ejecutar() {
     return;
   }
 
-  ui.mostrarMensaje("¡Calibración guardada!", HACER_PIM ? "PIM y espirometría" : "Espirometría", COLOR_VERDE_OK);
+  ui.mostrarMensaje("¡Evaluación guardada!", HACER_PIM ? "PIM y espirometría" : "Espirometría", COLOR_VERDE_OK);
   delay(1500);
 }

@@ -245,7 +245,9 @@ bool TarjetaSD::guardarMedicion(const String &id, const String &idCalibracion, c
     if (!ev->valido) doc["error"] = textoCodigoEspiro(ev->codigo);
   }
   if (ev && ev->valido) {
-    doc["fvc"]   = roundf(ev->fvc_L * 100.0f) / 100.0f;
+    doc["fvc"]   = roundf(ev->fvc_L * 100.0f) / 100.0f;          // con la cola extrapolada
+    doc["fvc_medido"]   = roundf(ev->fvcMedido_L * 100.0f) / 100.0f;
+    doc["volumen_cola"] = roundf(ev->volCola_L * 1000.0f) / 1000.0f;   // L agregados (0 = sin corrección)
     doc["fev1"]  = roundf(ev->fev1_L * 100.0f) / 100.0f;
     doc["pef"]   = roundf(ev->pef_Lmin * 10.0f) / 10.0f;
     doc["bev"]   = roundf(ev->bev_L * 1000.0f) / 1000.0f;

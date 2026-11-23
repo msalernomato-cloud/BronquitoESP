@@ -231,7 +231,7 @@ void BronquitoUI::drawMainMenu() {
   tft.drawRoundRect(251, 61, 203, 108, 9, BRONQUITO_CYAN);
   tft.setTextColor(BRONQUITO_CYAN, COLOR_TARJETA_BG);
   tft.setTextSize(2);
-  escribir("Calibración", 352, 115);
+  escribir("Evaluación", 352, 115);
 
   // 3. Botón Configuración
   tft.fillRoundRect(25, 185, 205, 110, 10, COLOR_TARJETA_BG);
@@ -259,7 +259,7 @@ void BronquitoUI::drawCalibMenu() {
   tft.setTextDatum(ML_DATUM);
   tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
   tft.setTextSize(2);
-  escribir("Calibración de Sensores", 15, 23);
+  escribir("Evaluación", 15, 23);
 
   // Botón único: recorrido guiado PIM + Espirometría
   tft.fillRoundRect(25, 65, 430, 135, 12, COLOR_TARJETA_BG);
@@ -268,7 +268,7 @@ void BronquitoUI::drawCalibMenu() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(BRONQUITO_CYAN, COLOR_TARJETA_BG);
   tft.setTextSize(3);
-  escribir("Calibrar", 240, 105);
+  escribir("Evaluar", 240, 105);
   tft.setTextSize(2);
   tft.setTextColor(BRONQUITO_BROWN, COLOR_TARJETA_BG);
   escribir("PIM + Espirometría", 240, 143);
@@ -968,7 +968,7 @@ int BronquitoUI::mostrarHistorial() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(BRONQUITO_CYAN, COLOR_TARJETA_BG);
   tft.setTextSize(2);
-  escribir("Calibraciones", 127, 120);
+  escribir("Evaluaciones", 127, 120);
   tft.setTextSize(1);
   tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_TARJETA_BG);
   escribir("PIM y Espirometría", 127, 155);
@@ -1012,7 +1012,7 @@ int BronquitoUI::elegirCalibracion(const String *fechas, const String *tipos, in
   tft.setTextDatum(ML_DATUM);
   tft.setTextColor(COLOR_FONDO, BRONQUITO_CYAN);
   tft.setTextSize(2);
-  escribir("Calibraciones guardadas", 15, 23);
+  escribir("Evaluaciones guardadas", 15, 23);
 
   auto dibujarPagina = [&]() {
     tft.fillRect(0, 46, 480, 274, COLOR_FONDO);
@@ -1022,7 +1022,7 @@ int BronquitoUI::elegirCalibracion(const String *fechas, const String *tipos, in
       tft.setTextDatum(MC_DATUM);
       tft.setTextSize(2);
       tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);
-      escribir("No hay calibraciones", 240, 120);
+      escribir("No hay evaluaciones", 240, 120);
       tft.setTextColor(COLOR_TEXTO_GRIS, COLOR_FONDO);
       escribir("guardadas todavía", 240, 150);
     } else {
