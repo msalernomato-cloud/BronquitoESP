@@ -133,8 +133,7 @@ static String textoFin(const String &fin) {
 void FlujoHistorial::verEntrenamiento(const String &id, const String &fecha) {
   ResumenEntrenamiento r;
   if (!tarjeta.leerResumenEntrenamiento(id, r)) {
-    ui.mostrarMensaje("No se pudo leer", "Archivo vacío o dañado", COLOR_ROJO_DEL);
-    delay(2000);
+    ui.mostrarError("No se pudo leer", "Archivo vacío o dañado");
     return;
   }
 
@@ -203,8 +202,7 @@ void FlujoHistorial::flujoEntrenamientos() {
   ui.mostrarMensaje("Leyendo tarjeta SD...");
   int n = tarjeta.listarEntrenamientos(ids, fechas, tipos, MAX_HIST);
   if (n < 0) {
-    ui.mostrarMensaje("No se pudo leer", "No se detectó la tarjeta SD", COLOR_ROJO_DEL);
-    delay(2000);
+    ui.mostrarError("No se pudo leer", "No se detectó la tarjeta SD");
     return;
   }
 

@@ -94,8 +94,7 @@ void FlujoCalibracion::calibracionCancelada(const String &calibId) {
   tarjeta.borrarTemporalesPIM();
   if (calibId.length() > 0) tarjeta.borrarCalibracion(calibId);
   Serial.println("[CAL] Cancelada: no se guarda nada");
-  ui.mostrarMensaje("Evaluación cancelada", "No se guardó nada", COLOR_ROJO_DEL);
-  delay(1500);
+  ui.mostrarError("Evaluación cancelada", "No se guardó nada");
 }
 
 // No se pudo medir (falta de memoria): no es una cancelación, así que lo ya guardado
@@ -198,12 +197,13 @@ void FlujoCalibracion::ejecutar() {
         }
         listo = true;
       } else {   // con varios intentos se muestra cómo va cada uno
-        if (it.valido)
+        if (it.valido) {
           ui.mostrarMensaje("Intento " + String(k + 1) + ": " + String(it.pim_cmH2O, 1) + " cmH2O",
                             "Parecidos: " + String(parecidos) + " de " + String(INTENTOS_REPRO), COLOR_VERDE_OK);
-        else
-          ui.mostrarMensaje("Intento " + String(k + 1) + " inválido (E" + String(it.codigo) + ")", textoCodigoPIM(it.codigo), COLOR_ROJO_DEL);
-        delay(2500);
+          delay(2500);
+        } else {
+          ui.mostrarError("Intento " + String(k + 1) + " inválido (E" + String(it.codigo) + ")", textoCodigoPIM(it.codigo));
+        }
       }
     }
 
@@ -227,14 +227,14 @@ void FlujoCalibracion::ejecutar() {
       if (calibId.length() == 0) calibId = tarjeta.nuevoIdCalibracion(reloj.fechaHoraActual());
       bool pimGuardada = tarjeta.guardarPIM(calibId, reloj.fechaHoraActual(), rp, ambPim);
       Serial.println(pimGuardada ? "[SD] PIM guardada: " + calibId : String("[SD] No se pudo guardar la PIM"));
-      if (pimGuardada)
-        ui.mostrarMensaje("PIM guardada en la SD",
-                          rp.codigo == PIM_OK ? "PIM: " + String(rp.pim_cmH2O, 1) + " cmH2O"
-                                                  : "No reproducible (E" + String(rp.codigo) + ")",
-                          rp.codigo == PIM_OK ? COLOR_VERDE_OK : COLOR_ROJO_DEL);
-      else
+      if (!pimGuardada) {
         ui.showErrorMessage("Error en SD", "No se pudo guardar la PIM");   // espera el OK
-      if (pimGuardada) delay(2000);
+      } else if (rp.codigo == PIM_OK) {
+        ui.mostrarMensaje("PIM guardada en la SD", "PIM: " + String(rp.pim_cmH2O, 1) + " cmH2O", COLOR_VERDE_OK);
+        delay(2000);
+      } else {
+        ui.mostrarError("PIM guardada en la SD", "No reproducible (E" + String(rp.codigo) + ")");   // espera el OK
+      }
     }
 
     bool sigue = ui.mostrarPasoCalibracion("Descanso", "Muy bien. PIM lista.", lDescanso, 3, "CONTINUAR", BRONQUITO_CYAN);
@@ -263,8 +263,7 @@ void FlujoCalibracion::ejecutar() {
                                           "Terminar", "Repetir", COLOR_TEXTO_GRIS, BRONQUITO_CYAN);
       if (repetir) continue;
       Serial.printf("[CAL] Terminada con la espirometría inválida (E%d)\n", evEsp.codigo);
-      ui.mostrarMensaje("Evaluación guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
-      delay(1800);
+      ui.mostrarAviso("Evaluación guardada", "Espirometría con error E" + String(evEsp.codigo), BRONQUITO_CYAN);
       return;
     }
     int r = ui.revisarManiobra(HACER_PIM ? "Paso 2 de 2: Espirometría" : "Espirometría", "FVC " + String(evEsp.fvc_L, 2) + " L",

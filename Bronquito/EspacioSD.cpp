@@ -47,9 +47,8 @@ bool EspacioSD::asegurarEspacio() {
   Serial.printf("[SD] Espacio libre: %s\n", textoEspacio(libre).c_str());
   if (libre >= UMBRAL_LIMPIEZA) return true;
 
-  ui.mostrarMensaje("Poco espacio en la microSD", "Quedan " + textoEspacio(libre) + ": se borran pruebas viejas",
-                    BRONQUITO_ORANGE);
-  delay(2500);
+  ui.mostrarAviso("Poco espacio en la microSD", "Quedan " + textoEspacio(libre) + ": se borran pruebas viejas",
+                  BRONQUITO_ORANGE);
   ui.mostrarMensaje("Liberando espacio...", "Se borran pruebas que ya están en la web");
 
   int borradas = 0;
@@ -101,8 +100,7 @@ bool EspacioSD::asegurarEspacio() {
   }
   if (libre < UMBRAL_LIMPIEZA) {
     // Se puede medir igual, pero la próxima vez vuelve a intentar liberar espacio
-    ui.mostrarMensaje("La microSD sigue con poco espacio", "Quedan " + textoEspacio(libre), BRONQUITO_ORANGE);
-    delay(2500);
+    ui.mostrarAviso("La microSD sigue con poco espacio", "Quedan " + textoEspacio(libre), BRONQUITO_ORANGE);
   }
   return true;
 }

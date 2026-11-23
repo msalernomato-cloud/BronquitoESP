@@ -24,8 +24,7 @@ CondicionesAmbiente FlujoEntrenamiento::leerAmbiente() {
 
 void FlujoEntrenamiento::mostrarError(const String &titulo, const String &mensaje) {
   Serial.println("[ENT] " + titulo + ": " + mensaje);
-  ui.mostrarMensaje(titulo, mensaje, COLOR_ROJO_DEL);
-  delay(2000);
+  ui.mostrarError(titulo, mensaje);   // espera el OK
 }
 
 // "AAAA-MM-DD" -> "DD/MM/AAAA"
@@ -51,8 +50,7 @@ void FlujoEntrenamiento::ejecutar() {
   }
   if (!res.manual && !res.hayFechaHoy) {
     Serial.println("[ENT] El equipo no tiene la hora: no se puede verificar la vigencia de la evaluación");
-    ui.mostrarMensaje("No se pudo verificar la vigencia", "El equipo no tiene la fecha", BRONQUITO_ORANGE);
-    delay(2500);
+    ui.mostrarAviso("No se pudo verificar la vigencia", "El equipo no tiene la fecha", BRONQUITO_ORANGE);
   }
   Serial.printf("[ENT] Resistencia: nivel %d (%s) | última evaluación %s\n", res.nivel,
                 res.manual ? "manual" : "automático", res.hayEvaluacion ? res.fechaEvaluacion.c_str() : "ninguna");
@@ -195,8 +193,10 @@ void FlujoEntrenamiento::ejecutar() {
     return;
   }
   Serial.println("[ENT] Sesión guardada: " + id);
-  ui.mostrarMensaje("Entrenamiento guardado",
-                    hayFeatures ? "" : "Sin features (ver serie)",
-                    hayFeatures ? COLOR_VERDE_OK : COLOR_ROJO_DEL);
-  delay(1500);
+  if (hayFeatures) {
+    ui.mostrarMensaje("Entrenamiento guardado", "", COLOR_VERDE_OK);
+    delay(1500);
+  } else {
+    ui.mostrarError("Entrenamiento guardado", "Sin features (ver serie)");   // espera el OK
+  }
 }

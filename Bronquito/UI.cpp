@@ -358,14 +358,18 @@ void BronquitoUI::showErrorMessage(String title, String message) {
 }
 
 void BronquitoUI::mostrarError(const String &titulo, const String &detalle) {
+  mostrarAviso(titulo, detalle, COLOR_ROJO_DEL);
+}
+
+void BronquitoUI::mostrarAviso(const String &titulo, const String &detalle, uint16_t color) {
   hasDot = false;
   tft.fillRoundRect(15, 65, 450, 190, 10, COLOR_FONDO);
-  tft.drawRoundRect(15, 65, 450, 190, 10, COLOR_ROJO_DEL);
-  tft.drawRoundRect(16, 66, 448, 188, 9, COLOR_ROJO_DEL);
+  tft.drawRoundRect(15, 65, 450, 190, 10, color);
+  tft.drawRoundRect(16, 66, 448, 188, 9, color);
 
   tft.setTextDatum(MC_DATUM);
   tft.setTextSize(2);
-  tft.setTextColor(COLOR_ROJO_DEL, COLOR_FONDO);
+  tft.setTextColor(color, COLOR_FONDO);
   escribir(titulo, 240, 98);
   if (detalle.length() > 0) {
     tft.setTextColor(BRONQUITO_BROWN, COLOR_FONDO);

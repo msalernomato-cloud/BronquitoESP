@@ -96,6 +96,8 @@ public:
   // Cartel de error sobre la pantalla actual, con botón OK: espera a que lo toquen para volver
   void showErrorMessage(String title, String message);
   void mostrarError(const String &titulo, const String &detalle = "");   // lo mismo (nombre en castellano)
+  // Mismo recuadro que mostrarError pero en otro color (avisos); también espera el OK
+  void mostrarAviso(const String &titulo, const String &detalle, uint16_t color);
   void setSynced(bool synced) { isSynced = synced; }
   void setUsuario(const String &texto) { textoUsuario = texto; }   // lo que se ve en el login
   void setEstadoConexion(EstadoConexion e) { estadoCon = e; }

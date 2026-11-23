@@ -98,8 +98,12 @@ bool FlujoSesion::validarPin() {
 
   bool correcto = (pin == tarjeta.pin());
   Serial.println(correcto ? "[SESION] PIN correcto" : "[SESION] PIN incorrecto");
-  ui.showPinStatus(correcto);
-  delay(correcto ? 800 : 1000);
+  if (correcto) {
+    ui.showPinStatus(true);
+    delay(800);
+  } else {
+    ui.mostrarError("PIN incorrecto", "");   // espera el OK; después se vuelve a dibujar el teclado
+  }
   return correcto;
 }
 
