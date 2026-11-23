@@ -23,6 +23,34 @@ bool ValvulaActiva::activar(int nivel) {
   return true;
 }
 
+bool ValvulaActiva::cerrar() {
+  if (!conectada) {
+    conectada = ledcAttach(PIN_SERVO, FRECUENCIA_HZ, RESOLUCION_BITS);
+    if (!conectada) {
+      Serial.println("[VALVULA] No se pudo iniciar el PWM en GPIO5");
+      return false;
+    }
+  }
+  if (!configurarDuty(DC_CERRADA)) {
+    Serial.println("[VALVULA] No se pudo fijar el duty cycle");
+    liberar();
+    return false;
+  }
+  dc = DC_CERRADA;
+  Serial.printf("[VALVULA] PWM prendido: cerrada -> DC %.1f %% (pulso %.2f ms)\n", dc, dc * 0.2f);
+  delay(ESPERA_MOVIMIENTO_MS);
+  return true;
+}
+
+void ValvulaActiva::soltar() {
+  if (!conectada) return;
+  ledcDetach(PIN_SERVO);
+  pinMode(PIN_SERVO, OUTPUT);
+  digitalWrite(PIN_SERVO, LOW);   // sin pulsos: la válvula queda en la última posición, sin fuerza
+  conectada = false;
+  Serial.printf("[VALVULA] PWM apagado con la válvula en DC %.1f %%\n", dc);
+}
+
 void ValvulaActiva::liberar() {
   if (!conectada) return;
   if (configurarDuty(DC_ABIERTA)) delay(ESPERA_MOVIMIENTO_MS);   // que llegue a abierta antes de cortar

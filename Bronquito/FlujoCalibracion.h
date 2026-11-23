@@ -10,6 +10,7 @@
 #include "TarjetaSD.h"
 #include "Reloj.h"
 #include "BTPSSensor.h"
+#include "ValvulaActiva.h"
 
 // Calibración guiada: PIM (si el equipo tiene el sensor) + espirometría, y guardado en la SD.
 // Una espirometría que no pasa la validación se guarda igual (con su código de error) y se puede repetir.
@@ -17,7 +18,7 @@
 class FlujoCalibracion {
 public:
   FlujoCalibracion(BronquitoUI &ui, RespiratorySensors &sensoresResp, TarjetaSD &tarjeta, Reloj &reloj,
-                   BTPSSensor &btps);
+                   BTPSSensor &btps, ValvulaActiva &valvula);
 
   // Recorrido completo. Al volver, la pantalla queda para que el .ino dibuje el menú de calibración
   void ejecutar();
@@ -28,6 +29,7 @@ private:
   TarjetaSD &tarjeta;
   Reloj &reloj;
   BTPSSensor &btps;
+  ValvulaActiva &valvula;
 
   // Una maniobra: pantalla, tara, captura (la hace el sensor) y, si es espirometría, su análisis.
   // CAPTURA_CANCELADA si el usuario tocó "Cancelar"; CAPTURA_SIN_MEMORIA si no se pudo medir.

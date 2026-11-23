@@ -8,6 +8,8 @@
 // El PWM está prendido SOLO durante el entrenamiento: activar(nivel) lo prende y mueve la válvula, y
 // liberar() la vuelve a abrir y APAGA el PWM (el pin queda en LOW, sin pulsos). Fuera del entrenamiento
 // el servo no recibe señal: con el PWM prendido todo el tiempo dejó de andar la evaluación.
+// En la evaluación: cerrar() (PIM) o activar(0) (espirometría, abierta) y después soltar(), que apaga el
+// PWM SIN mover la válvula: queda en esa posición durante la medición, sin pulsos que metan ruido.
 //
 // 7 posiciones (duty cycle en %, a 50 Hz 1 % = 0,2 ms de pulso): abierta, cerrada y 5 niveles de
 // resistencia. Dependen del armado: si se desarma la válvula hay que volver a medirlos (ver informe,
@@ -30,6 +32,8 @@ public:
 
   bool activar(int nivel);   // prende el PWM y lleva la válvula al DC del nivel (espera a que llegue)
   void liberar();            // vuelve a abrir, espera y apaga el PWM
+  bool cerrar();             // prende el PWM y lleva la válvula a cerrada (oclusión total, para la PIM)
+  void soltar();             // apaga el PWM sin mover la válvula (queda donde está, sin fuerza)
   bool activa() const { return conectada; }
   float dcActual() const { return dc; }
 

@@ -6,10 +6,15 @@ static const bool GRAFICAR_CADA_INTENTO_PIM = false;  // true = muestra la presi
 // false = la calibración hace solo la espirometría (para probarla). El sensor de presión se sigue
 // usando: es el que dice si el aire sale o entra.
 static const bool HACER_PIM = true;
+// Válvula en la evaluación: CERRADA en la PIM (esfuerzo contra oclusión) y ABIERTA en la espirometría
+// (nivel 0, sin resistencia). Se mueve antes de la tara y se apaga el PWM durante la captura, porque con
+// el PWM prendido la evaluación dejaba de andar. true = mantener el PWM durante la PIM, para que el servo
+// haga fuerza si el vacío llegara a mover la válvula (probar primero que la medición siga andando).
+static const bool PWM_DURANTE_PIM = false;
 
 FlujoCalibracion::FlujoCalibracion(BronquitoUI &ui, RespiratorySensors &sensoresResp, TarjetaSD &tarjeta,
-                                   Reloj &reloj, BTPSSensor &btps)
-  : ui(ui), sensoresResp(sensoresResp), tarjeta(tarjeta), reloj(reloj), btps(btps) {}
+                                   Reloj &reloj, BTPSSensor &btps, ValvulaActiva &valvula)
+  : ui(ui), sensoresResp(sensoresResp), tarjeta(tarjeta), reloj(reloj), btps(btps), valvula(valvula) {}
 
 CondicionesAmbiente FlujoCalibracion::leerAmbiente() {
   CondicionesAmbiente a;
@@ -38,6 +43,12 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
                                         EventoEspiratorio &ev, float factorBTPS) {
   ev = EventoEspiratorio();
 
+  // 0) Válvula: cerrada para la PIM, abierta (nivel 0) para la espirometría. Antes de la tara, para que
+  //    el movimiento del servo no corra el cero.
+  if (esPim) valvula.cerrar();
+  else       valvula.activar(0);
+  if (!esPim || !PWM_DURANTE_PIM) valvula.soltar();
+
   // 1) Pantalla primero y RECIÉN DESPUÉS la tara. Redibujar la pantalla después de la tara corría
   //    el cero ~12 mV (en flujo, la señal arrancaba en ~70 L/min en vez de 0; en PIM, ~2 cmH2O).
   const float totalSeg = duracionMs / 1000.0f;
@@ -55,6 +66,12 @@ ResultadoCaptura FlujoCalibracion::capturarManiobra(bool esPim, uint32_t duracio
   ResultadoCaptura r = sensoresResp.capturar(
       duracionMs, 1, nullptr,
       [&]() { return ui.cancelarTocado(); });
+
+  // Terminada la PIM (o cancelada) se vuelve a abrir la válvula y se apaga el PWM
+  if (esPim) {
+    valvula.activar(0);
+    valvula.soltar();
+  }
 
   if (r == CAPTURA_SIN_MEMORIA) {
     Serial.println("[CAL] No se pudo iniciar el muestreo (memoria: ver líneas [MEM])");

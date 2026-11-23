@@ -22,7 +22,7 @@ BronquitoUI ui;
 TarjetaSD tarjeta(19, 22, 23, 21);     // microSD: CS, SCK, MISO, MOSI
 BronquitoNetwork net;
 RespiratorySensors sensoresResp(36, 39);
-ValvulaActiva valvula;                 // servo GPIO5: PWM SOLO durante el entrenamiento
+ValvulaActiva valvula;                 // servo GPIO5: PWM durante el entrenamiento y al mover la válvula en la evaluación
 
 const int DHT_PIN = 27;                // DHT22 (temperatura y humedad para la corrección BTPS). En la placa: pin 1 del conector del DFPlayer (J2). En el GPIO2 no leía por el LED de la ESP32
 BTPSSensor btps(DHT_PIN, DHT22);
@@ -38,7 +38,7 @@ EstadoSistema estadoActual = ESTADO_INICIO_SESION;
 
 FlujoSesion      sesion(ui, tarjeta, net, estadoActual);
 FlujoConexion    conexion(ui, net, tarjeta, reloj, sesion, estadoActual);
-FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps);
+FlujoCalibracion calibracion(ui, sensoresResp, tarjeta, reloj, btps, valvula);
 FlujoHistorial   historial(ui, tarjeta);
 FlujoConfiguracion configuracion(ui, tarjeta, net, reloj);
 FlujoEntrenamiento entrenamiento(ui, sensoresResp, valvula, tarjeta, reloj, btps);
