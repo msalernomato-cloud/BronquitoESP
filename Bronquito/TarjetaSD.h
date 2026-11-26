@@ -43,7 +43,8 @@ enum ResultadoFormato {
   FORMATO_OK,
   FORMATO_SIN_TARJETA,
   FORMATO_HAY_PENDIENTES,  // hay mediciones sin subir a la web: no se borró nada
-  FORMATO_ERROR            // algún archivo no se pudo borrar
+  FORMATO_NO_RESPONDE,     // la tarjeta está pero no se pudo leer: no se borró nada
+  FORMATO_ERROR            // se empezó a borrar pero quedaron archivos (o la tarjeta dejó de responder)
 };
 
 // ---- Datos del paciente (/perfil.json) -------------------------------------
@@ -287,7 +288,9 @@ public:
   // =========================================================================
   // MANTENIMIENTO
   // =========================================================================
-  int contarPendientes();                            // mediciones con "sincronizado": false
+  // Mediciones con "sincronizado": false. Si 'leido' no es nullptr, queda en false cuando no se
+  // pudieron leer las carpetas (la cuenta no es confiable)
+  int contarPendientes(bool *leido = nullptr);
   ResultadoFormato borrarTodo(bool forzar = false);  // sin forzar, no borra si hay pendientes
   // Espacio de la microSD en bytes (0 si no hay tarjeta). La primera vez puede tardar en tarjetas grandes
   uint64_t espacioTotal();
@@ -335,6 +338,8 @@ private:
   size_t muestrasEntrenamiento = 0; // muestras escritas en la sesión en curso (para reservar la memoria justa)
 
   bool montar();
+  bool remontar();                     // desmonta y vuelve a montar (por si quedó un montaje viejo)
+  bool probarEscritura();              // crea y borra un archivo de prueba en la raíz
   void olvidarPaciente(EstadoTarjeta motivo);
 
   // Escribe <id>.csv (si 'datos' no está vacío) y <id>.json. Si falla el .json, borra el .csv.
@@ -350,7 +355,9 @@ private:
   bool leerJson(const String &ruta, JsonDocument &doc);
   bool escribirJsonSeguro(const String &ruta, JsonDocument &doc, bool legible = true);
   bool escribirCsv(const String &ruta, const std::vector<MuestraEspiro> &datos);
-  std::vector<String> listarArchivos(const char *carpeta);
+  // Archivos sueltos de la carpeta. Si 'ok' no es nullptr, queda en false cuando la carpeta existe
+  // (o la tarjeta no responde) y no se pudo abrir. Que la carpeta no exista no es un error
+  std::vector<String> listarArchivos(const char *carpeta, bool *ok = nullptr);
 
   static String rutaMedicion(const String &id, const char *extension);
   static String rutaTemporalPIM(int intento);

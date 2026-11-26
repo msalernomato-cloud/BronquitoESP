@@ -23,16 +23,35 @@ bool TarjetaSD::montar() {
   return montada;
 }
 
+bool TarjetaSD::remontar() {
+  if (montada) {
+    SD.end();
+    montada = false;
+  }
+  return montar() && hayTarjeta();
+}
+
 bool TarjetaSD::hayTarjeta() {
   if (!montada) return false;
-  File raiz = SD.open("/");
-  bool ok = (bool)raiz;
-  if (raiz) raiz.close();
-  if (!ok) {                    // la sacaron: se desmonta para poder volver a montarla
+  // Se lee el sector 0 directo de la tarjeta. Abrir "/" no alcanza: con lo que el sistema de archivos
+  // tiene en memoria puede salir bien aunque la tarjeta ya no responda (falso contacto, se movió).
+  static uint8_t sector[512];
+  bool ok = SD.readRAW(sector, 0);
+  if (!ok) {                    // la sacaron o no responde: se desmonta para poder volver a montarla
     SD.end();
     montada = false;
   }
   return ok;
+}
+
+bool TarjetaSD::probarEscritura() {
+  static const char *RUTA = "/_prueba_escritura.txt";
+  File f = SD.open(RUTA, FILE_WRITE);
+  if (!f) return false;
+  bool escrito = f.print("ok") == 2;
+  f.close();
+  bool borrado = SD.remove(RUTA);
+  return escrito && borrado;
 }
 
 void TarjetaSD::olvidarPaciente(EstadoTarjeta motivo) {
@@ -104,14 +123,20 @@ EstadoTarjeta TarjetaSD::leerPerfil(bool mostrarDetalle) {
 }
 
 bool TarjetaSD::guardarPerfil(JsonVariantConst perfilWeb) {
-  if (!hayTarjeta()) return false;
   static const char *CLAVES[] = {"usuario", "nombre", "apellido", "pin_version", "sexo", "altura",
                                  "peso", "fumador", "nacimiento", "registro", "enfermedad"};
   JsonDocument doc;
   for (const char *clave : CLAVES) doc[clave] = String(perfilWeb[clave] | "");
   String usuario = doc["usuario"] | "";
   if (usuario.length() == 0) return false;
-  return escribirJsonSeguro(ARCHIVO_PERFIL, doc);
+
+  montar();
+  if (hayTarjeta() && escribirJsonSeguro(ARCHIVO_PERFIL, doc)) return true;
+  // Puede ser un montaje viejo (la tarjeta se movió o tuvo un falso contacto): se remonta y se prueba otra vez
+  Serial.println("[SD] No se pudo guardar el perfil: se vuelve a montar la tarjeta y se reintenta");
+  bool ok = remontar() && escribirJsonSeguro(ARCHIVO_PERFIL, doc);
+  if (!ok) Serial.println("[SD] Tampoco se pudo guardar el perfil al reintentar");
+  return ok;
 }
 
 bool TarjetaSD::guardarPin(const String &pin, const String &version) {
@@ -1135,14 +1160,21 @@ bool TarjetaSD::cargarSerie(const String &id, SerieMedicion &serie) {
 // =============================================================================
 // MANTENIMIENTO
 // =============================================================================
-int TarjetaSD::contarPendientes() {
-  if (!hayTarjeta()) return 0;
+int TarjetaSD::contarPendientes(bool *leido) {
+  if (leido) *leido = true;
+  if (!hayTarjeta()) {
+    if (leido) *leido = false;
+    return 0;
+  }
   JsonDocument filtro;
   filtro["sincronizado"] = true;       // solo se lee esa clave de cada archivo
 
   int pendientes = 0;
   for (const char *carpeta : CARPETAS_PRUEBAS) {
-    for (const String &ruta : listarArchivos(carpeta)) {
+    bool ok = true;
+    std::vector<String> rutas = listarArchivos(carpeta, &ok);
+    if (!ok && leido) *leido = false;
+    for (const String &ruta : rutas) {
       String r = ruta;
       r.toLowerCase();
       if (!r.endsWith(".json")) continue;
@@ -1160,24 +1192,64 @@ int TarjetaSD::contarPendientes() {
 }
 
 ResultadoFormato TarjetaSD::borrarTodo(bool forzar) {
-  montar();
-  if (!hayTarjeta()) return FORMATO_SIN_TARJETA;
+  // Se monta de cero: un montaje viejo (la tarjeta se movió o tuvo un falso contacto) puede parecer
+  // andar y fallar en silencio al leer o escribir.
+  if (!remontar()) return FORMATO_SIN_TARJETA;
 
-  int pendientes = contarPendientes();
+  // Si no se pueden leer las carpetas, la cuenta de pendientes no sirve: no se borra nada
+  bool leido = false;
+  int pendientes = contarPendientes(&leido);
+  if (!leido) {
+    Serial.println("[SD] No se pudieron leer las carpetas de pruebas: se vuelve a montar la tarjeta");
+    if (remontar()) pendientes = contarPendientes(&leido);
+    if (!leido) {
+      Serial.println("[SD] No se borró nada: la tarjeta no responde");
+      return FORMATO_NO_RESPONDE;
+    }
+  }
   if (!forzar && pendientes > 0) {
     Serial.printf("[SD] No se borró nada: hay %d mediciones sin subir\n", pendientes);
     return FORMATO_HAY_PENDIENTES;
   }
 
-  bool ok = true;
-  for (const char *ruta : {ARCHIVO_PERFIL, ARCHIVO_CONFIG})
-    if (SD.exists(ruta) && !SD.remove(ruta)) ok = false;
-  for (const char *carpeta : CARPETAS_PRUEBAS)
-    for (const String &ruta : listarArchivos(carpeta))
-      if (!SD.remove(ruta)) ok = false;
+  // Borra y después comprueba que no quedó nada. La comprobación hace falta porque si la tarjeta deja de
+  // responder a mitad de camino, las carpetas se ven vacías y ningún remove falla.
+  auto borrarYComprobar = [&]() -> bool {
+    bool ok = true;
+    for (const char *ruta : {ARCHIVO_PERFIL, ARCHIVO_CONFIG})
+      if (SD.exists(ruta) && !SD.remove(ruta)) ok = false;
+    for (const char *carpeta : CARPETAS_PRUEBAS) {
+      bool listado = true;
+      for (const String &ruta : listarArchivos(carpeta, &listado))
+        if (!SD.remove(ruta)) ok = false;
+      if (!listado) ok = false;
+    }
+
+    if (SD.exists(ARCHIVO_PERFIL) || SD.exists(ARCHIVO_CONFIG)) ok = false;
+    for (const char *carpeta : CARPETAS_PRUEBAS) {
+      bool listado = true;
+      int quedan = listarArchivos(carpeta, &listado).size();
+      if (!listado || quedan > 0) {
+        Serial.printf("[SD] %s: %s\n", carpeta,
+                      listado ? (String("quedaron ") + quedan + " archivos").c_str() : "no se pudo leer");
+        ok = false;
+      }
+    }
+    if (!probarEscritura()) {
+      Serial.println("[SD] La prueba de escritura falló");
+      ok = false;
+    }
+    return ok;
+  };
+
+  bool ok = borrarYComprobar();
+  if (!ok) {
+    Serial.println("[SD] No se borró todo: se vuelve a montar la tarjeta y se reintenta");
+    ok = remontar() && borrarYComprobar();
+  }
 
   olvidarPaciente(TARJETA_SIN_PACIENTE);
-  Serial.println(ok ? "[SD] Tarjeta borrada" : "[SD] No se pudo borrar todo");
+  Serial.println(ok ? "[SD] Tarjeta borrada y comprobada" : "[SD] No se pudo borrar todo");
   return ok ? FORMATO_OK : FORMATO_ERROR;
 }
 
@@ -1499,10 +1571,17 @@ bool TarjetaSD::escribirCsv(const String &ruta, const std::vector<MuestraEspiro>
   return true;
 }
 
-std::vector<String> TarjetaSD::listarArchivos(const char *carpeta) {
+std::vector<String> TarjetaSD::listarArchivos(const char *carpeta, bool *ok) {
   std::vector<String> rutas;
+  if (ok) *ok = true;
   File dir = SD.open(carpeta);
-  if (!dir || !dir.isDirectory()) { if (dir) dir.close(); return rutas; }
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    // Que la carpeta no exista es normal (todavía no se guardó nada). Que la tarjeta no responda, o que
+    // la carpeta exista y no se pueda abrir, no: sin esto se confunde con "no hay archivos".
+    if (ok && (!hayTarjeta() || SD.exists(carpeta))) *ok = false;
+    return rutas;
+  }
   for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
     if (!f.isDirectory()) {
       String nombre = String(f.name());

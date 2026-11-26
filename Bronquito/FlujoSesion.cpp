@@ -132,6 +132,7 @@ String FlujoSesion::prepararNuevoPaciente() {
     case FORMATO_OK:             return "";
     case FORMATO_HAY_PENDIENTES: return "archivos_pendientes";
     case FORMATO_SIN_TARJETA:    return "sin_tarjeta_sd";
+    case FORMATO_NO_RESPONDE:    return "error_sd";
     default:                     return "error_formato";
   }
 }
@@ -145,6 +146,7 @@ ResultadoFormato FlujoSesion::borrarDatos(bool forzar) {
                                  delay(2000);                                                              break;
     case FORMATO_HAY_PENDIENTES: ui.mostrarError("No se pudo preparar", "Hay pruebas sin subir");         break;
     case FORMATO_SIN_TARJETA:    ui.mostrarError("No se pudo preparar", "No hay tarjeta SD");             break;
+    case FORMATO_NO_RESPONDE:    ui.mostrarError("No se pudo preparar", "La tarjeta SD no responde");     break;
     default:                     ui.mostrarError("Preparación incompleta", "Revisá la tarjeta SD");       break;
   }
 
